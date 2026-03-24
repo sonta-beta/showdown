@@ -1402,7 +1402,7 @@ export default function App() {
                   <div className="absolute bottom-5 left-1/2 h-8 w-40 -translate-x-1/2 rounded-full bg-slate-950/20 blur-md md:bottom-10 md:h-14 md:w-72" />
 
                   <HpPanel name={enemy.nombre} hp={enemy.hpActual} maxHp={enemy.hp} side="enemy" />
-                  <div className="absolute bottom-4 left-[40%] h-32 w-40 -translate-x-1/2 md:bottom-6 md:left-[35%] md:h-56 md:w-72">
+                  <div className="absolute bottom-4 left-[40%] z-20 h-32 w-40 -translate-x-1/2 md:bottom-6 md:left-[35%] md:z-10 md:h-56 md:w-72">
                     <BattleSprite
                       spriteKey={player.id}
                       name={player.nombre}
@@ -1416,7 +1416,7 @@ export default function App() {
                   </div>
 
                   <HpPanel name={player.nombre} hp={player.hpActual} maxHp={player.hp} side="player" />
-                  <div className="absolute bottom-14 left-[68%] h-32 w-40 -translate-x-1/2 md:top-8 md:bottom-auto md:left-[65%] md:h-48 md:w-64">
+                  <div className="absolute bottom-14 left-[68%] z-10 h-32 w-40 -translate-x-1/2 md:top-8 md:bottom-auto md:left-[65%] md:z-20 md:h-48 md:w-64">
                     <BattleSprite
                       spriteKey={enemy.id}
                       name={enemy.nombre}
