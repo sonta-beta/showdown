@@ -336,7 +336,9 @@ export default function App() {
   const [currentRoomId, setCurrentRoomId] = useState("");
   const [roomPlayers, setRoomPlayers] = useState([]);
   const [roomReady, setRoomReady] = useState({});
+  const [roomSelectedCharacters, setRoomSelectedCharacters] = useState({});
   const [roomSelectedCharacter, setRoomSelectedCharacter] = useState("alan_soma");
+  const [onlineBattleMode, setOnlineBattleMode] = useState(false);
   const [selectedMoveId, setSelectedMoveId] = useState(null);
   const [mobileLogOpen, setMobileLogOpen] = useState(false);
   const [previewMoveId, setPreviewMoveId] = useState(null);
@@ -351,6 +353,41 @@ export default function App() {
   );
   const difficulty = DIFFICULTIES[difficultyId];
   const selectedMove = player?.ataques.find((move) => move.id === selectedMoveId) ?? null;
+  const battleInputLocked = busy;
+
+  function hydrateCharacterForBattle(stateCharacter) {
+    const baseCharacter = CHARACTERS[stateCharacter?.characterId] || {};
+    const attacksById = Object.fromEntries((baseCharacter.ataques || []).map((attack) => [attack.id, attack]));
+    const hydratedAttacks = (stateCharacter?.ataques || baseCharacter.ataques || []).map((attack) => ({
+      ...(attacksById[attack.id] || {}),
+      ...attack
+    }));
+
+    return {
+      ...baseCharacter,
+      ...stateCharacter,
+      id: stateCharacter?.characterId || baseCharacter.id,
+      ataques: hydratedAttacks,
+      usos: { ...(stateCharacter?.usos || {}) }
+    };
+  }
+
+  function applyOnlineBattleState(battleState) {
+    const nextPlayer = hydrateCharacterForBattle(battleState.me);
+    const nextEnemy = hydrateCharacterForBattle(battleState.enemy);
+
+    setOnlineBattleMode(true);
+    setCurrentRoomId(battleState.roomId || "");
+    setSelectedId(nextPlayer.id || "alan_soma");
+    setRoomSelectedCharacter(nextPlayer.id || "alan_soma");
+    setPlayer(nextPlayer);
+    setEnemy(nextEnemy);
+    setTurn(battleState.turn || 1);
+    setLogs(battleState.log || ["La batalla online comenzó."]);
+    setBattleOver(Boolean(battleState.winner));
+    setBusy(Boolean(battleState.pendingMoves?.me) && !battleState.winner);
+    setScreen("battle");
+  }
 
   useEffect(() => {
     function onActiveUsers(list) {
@@ -371,23 +408,32 @@ export default function App() {
       setCurrentRoomId(roomId);
       setRoomPlayers(players || []);
       setRoomReady({});
+      setRoomSelectedCharacters({});
+      setOnlineBattleMode(false);
       setIncomingChallenge(null);
       setChallengeMessage(`Sala creada: ${roomId}`);
       setScreen("room");
     }
 
-    function onRoomState({ roomId, players, ready }) {
+    function onRoomState({ roomId, players, ready, selectedCharacters }) {
       setCurrentRoomId(roomId || "");
       setRoomPlayers(players || []);
       setRoomReady(ready || {});
+      setRoomSelectedCharacters(selectedCharacters || {});
     }
 
-    function onStartOnlineBattle({ roomId, players }) {
+    function onStartOnlineBattle({ roomId, players, selectedCharacters }) {
       setCurrentRoomId(roomId || "");
       setRoomPlayers(players || []);
+      setRoomSelectedCharacters(selectedCharacters || {});
+      setOnlineBattleMode(true);
+      setSelectedMoveId(null);
+      setPreviewMoveId(null);
       setChallengeMessage(`La batalla comenzó en ${roomId}.`);
-      setSelectedId(roomSelectedCharacter);
-      setScreen("menu");
+    }
+
+    function onBattleState(state) {
+      applyOnlineBattleState(state);
     }
 
     socket.on("active_users", onActiveUsers);
@@ -396,6 +442,7 @@ export default function App() {
     socket.on("battle_started", onBattleStarted);
     socket.on("room_state", onRoomState);
     socket.on("start_online_battle", onStartOnlineBattle);
+    socket.on("battle_state", onBattleState);
 
     return () => {
       socket.off("active_users", onActiveUsers);
@@ -404,6 +451,7 @@ export default function App() {
       socket.off("battle_started", onBattleStarted);
       socket.off("room_state", onRoomState);
       socket.off("start_online_battle", onStartOnlineBattle);
+      socket.off("battle_state", onBattleState);
     };
   }, []);
 
@@ -507,6 +555,7 @@ export default function App() {
   }
 
   function startBattle() {
+    setOnlineBattleMode(false);
     clearQueuedMove();
     setPlayer(cloneCharacter(selectedCharacter));
     setEnemy(cloneCharacter(enemyBase));
@@ -613,6 +662,22 @@ export default function App() {
     }
   }
 
+  function submitOnlineMove(move) {
+    if (!currentRoomId || !onlineBattleMode) return;
+
+    socket.emit("submit_move", { roomId: currentRoomId, moveId: move.id }, (response) => {
+      if (!response?.ok) {
+        setBusy(false);
+        setSelectedMoveId(null);
+        setChallengeMessage(response?.message || "No se pudo enviar el movimiento.");
+        return;
+      }
+
+      setBusy(true);
+      setChallengeMessage("Movimiento enviado. Esperando al rival...");
+    });
+  }
+
   function handleMoveClick(move) {
     if (longPressTriggeredRef.current) {
       longPressTriggeredRef.current = false;
@@ -624,6 +689,10 @@ export default function App() {
     queuedMoveTimeoutRef.current = setTimeout(() => {
       queuedMoveTimeoutRef.current = null;
       setSelectedMoveId(null);
+      if (onlineBattleMode) {
+        submitOnlineMove(move);
+        return;
+      }
       runTurn(move);
     }, 900);
   }
@@ -1189,30 +1258,31 @@ export default function App() {
         )}
 
         {screen === "room" && (
-          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-2 text-2xl font-bold">Sala previa</h2>
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
+            <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
+              <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Battle Room</div>
+              <h2 className="mb-2 text-2xl font-black tracking-[-0.04em] text-slate-900">Sala previa</h2>
               <p className="mb-5 text-sm text-zinc-400">Elegí tu personaje y marcate como listo. Cuando ambos estén listos, arranca la batalla.</p>
 
-              <div className="mb-5 rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
+              <div className="mb-5 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
                 <div className="font-semibold">Sala</div>
-                <div className="mt-1 text-zinc-400">{currentRoomId || "Sin sala"}</div>
+                <div className="mt-1 text-slate-500">{currentRoomId || "Sin sala"}</div>
               </div>
 
-              <div className="grid gap-4 md:grid-cols-2">
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {Object.values(CHARACTERS).map((char) => {
                   const selected = char.id === roomSelectedCharacter;
                   return (
                     <button
                       key={char.id}
                       onClick={() => setRoomSelectedCharacter(char.id)}
-                      className={`rounded-2xl border p-4 text-left transition ${selected ? "border-zinc-200 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-600"}`}
+                      className={`overflow-hidden rounded-[26px] border p-4 text-left transition ${selected ? "border-sky-500 bg-[linear-gradient(180deg,#f2faff_0%,#dbefff_100%)] shadow-[0_18px_40px_rgba(14,165,233,0.22)]" : "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] hover:border-slate-300 hover:bg-white"}`}
                     >
                       <div className="mb-2 flex items-center justify-between">
-                        <span className="text-lg font-bold">{char.nombre}</span>
-                        {selected && <span className="rounded-full bg-zinc-200 px-2 py-0.5 text-xs font-bold text-zinc-900">Elegido</span>}
+                        <span className="text-lg font-black tracking-[-0.03em] text-slate-900">{char.nombre}</span>
+                        {selected && <span className="rounded-full bg-sky-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] text-white">Pick</span>}
                       </div>
-                      <div className="grid grid-cols-2 gap-2 text-sm text-zinc-300">
+                      <div className="grid grid-cols-2 gap-2 text-sm text-slate-700">
                         <div>HP: {char.hp}</div>
                         <div>Ataque: {char.ataque}</div>
                         <div>Defensa: {char.defensa}</div>
@@ -1225,29 +1295,36 @@ export default function App() {
 
               <button
                 onClick={handleReadyForBattle}
-                className="mt-5 w-full rounded-2xl bg-zinc-100 px-4 py-3 font-bold text-zinc-950 transition hover:opacity-90"
+                className="mt-5 w-full rounded-[22px] bg-[linear-gradient(180deg,#0f172a_0%,#1e293b_100%)] px-4 py-4 text-sm font-black uppercase tracking-[0.2em] text-white transition hover:brightness-110"
               >
-                Listo
+                Listo para pelear
               </button>
             </section>
 
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-4 text-xl font-bold">Jugadores en la sala</h2>
+            <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-500">Room Status</div>
+              <h2 className="mb-4 text-xl font-black tracking-[-0.03em] text-slate-900">Jugadores en la sala</h2>
               <div className="space-y-3">
                 {roomPlayers.map((playerName) => (
-                  <div key={playerName} className="flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3">
-                    <div>
-                      <div className="font-semibold text-zinc-100">{playerName}</div>
-                      <div className="text-sm text-zinc-400">{playerName === username ? "Vos" : "Rival"}</div>
+                  <div key={playerName} className="rounded-[24px] border border-slate-200 bg-white/80 px-4 py-3">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="font-black text-slate-900">{playerName}</div>
+                        <div className="text-sm text-slate-500">{playerName === username ? "Vos" : "Rival"}</div>
+                      </div>
+                      <div className={`rounded-full px-3 py-1 text-xs font-black uppercase tracking-[0.16em] ${roomReady[playerName] ? "bg-emerald-500 text-white" : "border border-slate-300 bg-white text-slate-500"}`}>
+                        {roomReady[playerName] ? "Listo" : "Esperando"}
+                      </div>
                     </div>
-                    <div className={`rounded-full px-3 py-1 text-xs font-bold ${roomReady[playerName] ? "bg-zinc-100 text-zinc-950" : "border border-zinc-700 text-zinc-400"}`}>
-                      {roomReady[playerName] ? "Listo" : "Esperando"}
+                    <div className="mt-3 flex items-center justify-between text-sm">
+                      <span className="text-slate-500">Personaje</span>
+                      <span className="font-black text-slate-900">{CHARACTERS[roomSelectedCharacters[playerName]]?.nombre || "Sin elegir"}</span>
                     </div>
                   </div>
                 ))}
               </div>
 
-              <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
+              <div className="mt-5 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
                 <div className="font-semibold">Estado</div>
                 <div className="mt-1 text-zinc-400">{challengeMessage || "Esperando confirmación de ambos jugadores."}</div>
               </div>
@@ -1441,7 +1518,7 @@ export default function App() {
                 </div>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                   {player.ataques.map((move) => {
-                    const disabled = battleOver || busy || player.usos[move.id] <= 0;
+                    const disabled = battleOver || battleInputLocked || player.usos[move.id] <= 0;
                     const usage = player.usos[move.id];
                     const moveDetails = getMoveDetails(move);
                     const isPreviewOpen = previewMoveId === move.id;
@@ -1500,7 +1577,7 @@ export default function App() {
                 </div>
                 <div className="hidden">
                   {player.ataques.map((move) => {
-                    const disabled = battleOver || busy || player.usos[move.id] <= 0;
+                    const disabled = battleOver || battleInputLocked || player.usos[move.id] <= 0;
                     const usage = player.usos[move.id];
                     const powerLabel = move.id === "tragar"
                       ? "10% 1000 · 40% 200 · 10% 250 · 40% falla"
@@ -1544,8 +1621,8 @@ export default function App() {
                     <div className="flex gap-2">
                       <button
                         onClick={handleCancelMove}
-                        disabled={!selectedMove || busy}
-                        className={`rounded-2xl px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] transition md:px-4 md:py-3 md:text-sm md:normal-case md:tracking-normal ${!selectedMove || busy ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                        disabled={!selectedMove || battleInputLocked}
+                        className={`rounded-2xl px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] transition md:px-4 md:py-3 md:text-sm md:normal-case md:tracking-normal ${!selectedMove || battleInputLocked ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
                       >
                         Cancelar
                       </button>
