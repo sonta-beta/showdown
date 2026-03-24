@@ -55,6 +55,19 @@ const CHARACTERS = {
       { id: "golpe_inutil", nombre: "Golpe inútil", tipo: "ataque", poder: 40, efectividad: 100, limiteUso: 25 },
     ],
   },
+  sonoda: {
+    id: "sonoda",
+    nombre: "Sonoda",
+    hp: 350,
+    ataque: 15,
+    defensa: 10,
+    velocidad: 10,
+    ataques: [
+      { id: "lolero", nombre: "Lolero", tipo: "defensivo", efectividad: 80, limiteUso: 10 },
+      { id: "kung_fu", nombre: "Kung Fu", tipo: "ataque", poder: 100, efectividad: 90, limiteUso: 15 },
+      { id: "borracho", nombre: "Borracho", tipo: "ataque", efectividad: 100, limiteUso: 12 },
+    ],
+  },
 };
 
 function cloneCharacter(base) {
@@ -249,6 +262,102 @@ function applyMove(attacker, defender, move, attackerOwnerLabel, defenderPlanned
       attacker: nextAttacker,
       defender: nextDefender,
       text: `${attackerOwnerLabel} usó Tragar y devoró al rival al instante.`,
+    };
+  }
+
+  if (move.id === "lolero") {
+    if (!roll(move.efectividad)) {
+      return {
+        attacker: nextAttacker,
+        defender: nextDefender,
+        text: `${attackerOwnerLabel} intentÃ³ Lolero, pero fallÃ³.`,
+      };
+    }
+
+    if (roll(5)) {
+      nextAttacker.hpActual = 0;
+      return {
+        attacker: nextAttacker,
+        defender: nextDefender,
+        text: `${attackerOwnerLabel} usÃ³ Lolero, engordÃ³ demasiado y muriÃ³.`,
+      };
+    }
+
+    const heal = Math.floor(nextAttacker.hp * 0.25);
+    nextAttacker.hpActual = Math.min(nextAttacker.hp, nextAttacker.hpActual + heal);
+    return {
+      attacker: nextAttacker,
+      defender: nextDefender,
+      text: `${attackerOwnerLabel} usÃ³ Lolero y recuperÃ³ ${heal} de vida.`,
+    };
+  }
+
+  if (move.id === "kung_fu") {
+    const accuracy = move.efectividad ?? 100;
+    if (!roll(accuracy)) {
+      return {
+        attacker: nextAttacker,
+        defender: nextDefender,
+        text: `${attackerOwnerLabel} usÃ³ Kung Fu, pero fallÃ³.`,
+      };
+    }
+
+    const poweredMove = roll(10) ? { ...move, poder: move.poder * 2 } : move;
+    const dmg = getDamage(nextAttacker, nextDefender, poweredMove);
+    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
+    return {
+      attacker: nextAttacker,
+      defender: nextDefender,
+      text:
+        poweredMove.poder > move.poder
+          ? `${attackerOwnerLabel} usÃ³ Kung Fu y duplicÃ³ su poder, causando ${dmg} de daÃ±o.`
+          : `${attackerOwnerLabel} usÃ³ Kung Fu e hizo ${dmg} de daÃ±o.`,
+    };
+  }
+
+  if (move.id === "borracho") {
+    const rollValue = Math.random() * 100;
+
+    if (rollValue < 50) {
+      const borrachoMove = { ...move, poder: 50 };
+      const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
+      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
+      return {
+        attacker: nextAttacker,
+        defender: nextDefender,
+        text: `${attackerOwnerLabel} usÃ³ Borracho e hizo ${dmg} de daÃ±o.`,
+      };
+    }
+
+    if (rollValue < 70) {
+      const borrachoMove = { ...move, poder: 100 };
+      const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
+      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
+      return {
+        attacker: nextAttacker,
+        defender: nextDefender,
+        text: `${attackerOwnerLabel} usÃ³ Borracho con fuerza y causÃ³ ${dmg} de daÃ±o.`,
+      };
+    }
+
+    if (rollValue < 99) {
+      const selfMove = { ...move, poder: 30 };
+      const selfDmg = getDamage(nextAttacker, nextAttacker, selfMove);
+      nextAttacker.hpActual = Math.max(0, nextAttacker.hpActual - selfDmg);
+      return {
+        attacker: nextAttacker,
+        defender: nextDefender,
+        text: `${attackerOwnerLabel} usÃ³ Borracho y se daÃ±Ã³ a sÃ­ mismo por ${selfDmg}.`,
+      };
+    }
+
+    const borrachoMove = { ...move, poder: 1000 };
+    const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
+    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
+    return {
+      attacker: nextAttacker,
+      defender: nextDefender,
+      text: `${attackerOwnerLabel} usÃ³ Borracho y desatÃ³ un golpe devastador de ${dmg} de daÃ±o.`,
     };
   }
 
