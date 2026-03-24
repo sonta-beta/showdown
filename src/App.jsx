@@ -27,7 +27,7 @@ const CHARACTERS = {
         tipo: "ataque",
         poder: 1000,
         limiteUso: 3,
-        descripcion: "Tiene 10% de hacer un golpe de poder 1000, 40% de hacer un golpe de poder 200, 10% de hacer un golpe de poder 250 y el resto falla."
+        descripcion: "Tiene 10% de hacer un golpe de poder 1000, 40% de hacer un golpe de poder 200, 10% de hacer un golpe de poder 200 y el resto falla."
       },
       {
         id: "golpe_de_gordo",
@@ -165,7 +165,7 @@ function getMoveDetails(move) {
   if (move.id === "tragar") {
     details.push("10% poder 1000");
     details.push("40% poder 200");
-    details.push("10% poder 250");
+    details.push("10% poder 200");
     details.push("40% falla");
   } else if (typeof move.poder === "number") {
     details.push(`Poder ${move.poder}`);
@@ -189,7 +189,7 @@ function rollTragarOutcome() {
 
   if (roll < 10) return { hit: true, poder: 1000 };
   if (roll < 50) return { hit: true, poder: 200 };
-  if (roll < 60) return { hit: true, poder: 250 };
+  if (roll < 60) return { hit: true, poder: 200 };
   return { hit: false, poder: 0 };
 }
 
@@ -225,7 +225,7 @@ function runSelfTests() {
   }
 
   const tragar = CHARACTERS.alan_soma.ataques.find((a) => a.id === "tragar");
-  if (!tragar || !tragar.descripcion.includes("poder 250")) {
+  if (!tragar || !tragar.descripcion.includes("10% de hacer un golpe de poder 200")) {
     throw new Error("Test failed: Tragar debería indicar sus nuevos valores de poder.");
   }
 
@@ -259,7 +259,7 @@ function BattleSprite({
   const shadowPosition = side === "enemy"
     ? "absolute bottom-2 left-1/2 w-24 -translate-x-1/2 md:right-20 md:left-auto md:top-[58%] md:bottom-auto md:w-28 md:translate-x-0"
     : "absolute bottom-2 left-1/2 w-28 -translate-x-1/2 md:left-20 md:bottom-6 md:w-32";
-  const attackOffset = side === "enemy" ? "translateX(-26px)" : "translateX(26px)";
+  const attackOffset = side === "enemy" ? "translateX(-12px)" : "translateX(26px)";
   const finalTransform = `${mirrored ? "scaleX(-1) " : ""}${acting ? `${attackOffset} ` : ""}scale(${scale})`;
 
   return (
@@ -1018,6 +1018,7 @@ export default function App() {
   return (
     <div className="showdown-dark min-h-screen bg-[linear-gradient(180deg,#020617_0%,#0f172a_45%,#111827_100%)] text-slate-100">
       <div className="mx-auto flex min-h-screen max-w-7xl flex-col p-3 md:p-6">
+        {screen !== "battle" && (
         <header className="mb-4 rounded-[28px] border border-slate-900/15 bg-[linear-gradient(180deg,#f6f8fb_0%,#dce6f0_100%)] px-5 py-4 shadow-[0_18px_50px_rgba(15,23,42,0.16)] md:mb-6 md:px-6">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div className="space-y-1">
@@ -1030,6 +1031,7 @@ export default function App() {
             </div>
           </div>
         </header>
+        )}
 
         {screen === "auth" && (
           <div className="flex min-h-[62vh] items-center justify-center px-2">
@@ -1414,7 +1416,7 @@ export default function App() {
                   </div>
 
                   <HpPanel name={player.nombre} hp={player.hpActual} maxHp={player.hp} side="player" />
-                  <div className="absolute bottom-14 left-[62%] h-32 w-40 -translate-x-1/2 md:top-8 md:bottom-auto md:left-[65%] md:h-48 md:w-64">
+                  <div className="absolute bottom-14 left-[68%] h-32 w-40 -translate-x-1/2 md:top-8 md:bottom-auto md:left-[65%] md:h-48 md:w-64">
                     <BattleSprite
                       spriteKey={enemy.id}
                       name={enemy.nombre}
