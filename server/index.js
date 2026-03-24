@@ -108,11 +108,21 @@ function getRoomByUsername(username) {
   return null;
 }
 
+function emitToRoomPlayers(room, eventName, payload) {
+  if (!room) return;
+
+  for (const username of room.players) {
+    const user = users.get(username);
+    if (!user?.socketId) continue;
+    io.to(user.socketId).emit(eventName, payload);
+  }
+}
+
 function emitRoomState(roomId) {
   const room = rooms.get(roomId);
   if (!room) return;
 
-  io.to(roomId).emit("room_state", {
+  emitToRoomPlayers(room, "room_state", {
     roomId,
     players: room.players,
     ready: room.ready,
@@ -592,7 +602,7 @@ io.on("connection", (socket) => {
       battle: null,
     });
 
-    io.to(roomId).emit("battle_started", {
+    emitToRoomPlayers(rooms.get(roomId), "battle_started", {
       roomId,
       players: [from, to],
     });
@@ -672,7 +682,7 @@ io.on("connection", (socket) => {
         },
       };
 
-      io.to(roomId).emit("start_online_battle", {
+      emitToRoomPlayers(room, "start_online_battle", {
         roomId,
         players: room.players,
         selectedCharacters: room.selectedCharacters,
