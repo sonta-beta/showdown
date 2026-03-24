@@ -28,7 +28,7 @@ const CHARACTERS = {
         tipo: "ataque",
         poder: 1000,
         limiteUso: 3,
-        descripcion: "Tiene 10% de hacer un golpe de poder 1000, 40% de hacer un golpe de poder 200, 10% de hacer un golpe de poder 200 y el resto falla."
+        descripcion: "Tiene 5% de hacer un golpe de poder 1000, 55% de hacer un golpe de poder 200 y 40% de probabilidad de fallar."
       },
       {
         id: "golpe_de_gordo",
@@ -164,9 +164,8 @@ function getMoveDetails(move) {
   const details = [];
 
   if (move.id === "tragar") {
-    details.push("10% poder 1000");
-    details.push("40% poder 200");
-    details.push("10% poder 200");
+    details.push("5% poder 1000");
+    details.push("55% poder 200");
     details.push("40% falla");
   } else if (typeof move.poder === "number") {
     details.push(`Poder ${move.poder}`);
@@ -188,8 +187,7 @@ function getMoveDetails(move) {
 function rollTragarOutcome() {
   const roll = Math.random() * 100;
 
-  if (roll < 10) return { hit: true, poder: 1000 };
-  if (roll < 50) return { hit: true, poder: 200 };
+  if (roll < 5) return { hit: true, poder: 1000 };
   if (roll < 60) return { hit: true, poder: 200 };
   return { hit: false, poder: 0 };
 }
@@ -226,7 +224,7 @@ function runSelfTests() {
   }
 
   const tragar = CHARACTERS.alan_soma.ataques.find((a) => a.id === "tragar");
-  if (!tragar || !tragar.descripcion.includes("10% de hacer un golpe de poder 200")) {
+  if (!tragar || !tragar.descripcion.includes("55% de hacer un golpe de poder 200")) {
     throw new Error("Test failed: Tragar debería indicar sus nuevos valores de poder.");
   }
 
@@ -347,6 +345,8 @@ export default function App() {
   const touchPreviewTimeoutRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
   const onlineBattleFallbackRef = useRef(null);
+  const onlineTurnAnimatingRef = useRef(false);
+  const pendingOnlineBattleStateRef = useRef(null);
 
   const selectedCharacter = CHARACTERS[selectedId];
   const enemyBase = useMemo(
@@ -356,6 +356,10 @@ export default function App() {
   const difficulty = DIFFICULTIES[difficultyId];
   const selectedMove = player?.ataques.find((move) => move.id === selectedMoveId) ?? null;
   const battleInputLocked = busy;
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
 
   function hydrateCharacterForBattle(stateCharacter) {
     const baseCharacter = CHARACTERS[stateCharacter?.characterId] || {};
@@ -396,6 +400,73 @@ export default function App() {
     setScreen("battle");
   }
 
+  async function playOnlineTurnSequence(payload) {
+    const steps = payload?.steps || [];
+
+    onlineTurnAnimatingRef.current = true;
+    setBusy(true);
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
+
+    for (const step of steps) {
+      const actorIsPlayer = step.actor === "me";
+      const targetIsPlayer = step.target === "me";
+
+      if (actorIsPlayer) {
+        setPlayerActing(true);
+      } else {
+        setEnemyActing(true);
+      }
+
+      await sleep(320);
+      setLogs((prev) => [step.text, ...prev].slice(0, 20));
+
+      if (targetIsPlayer) {
+        if (step.targetKo) {
+          setPlayerPose("ko");
+        } else if (step.targetDamaged) {
+          setPlayerPose("hit");
+          setPlayerFlashing(true);
+        }
+      } else if (step.targetKo) {
+        setEnemyPose("ko");
+      } else if (step.targetDamaged) {
+        setEnemyPose("hit");
+        setEnemyFlashing(true);
+      }
+
+      await sleep(380);
+
+      if (targetIsPlayer && step.targetDamaged && !step.targetKo) {
+        setPlayerPose("normal");
+        setPlayerFlashing(false);
+      }
+
+      if (!targetIsPlayer && step.targetDamaged && !step.targetKo) {
+        setEnemyPose("normal");
+        setEnemyFlashing(false);
+      }
+
+      if (actorIsPlayer) {
+        setPlayerActing(false);
+      } else {
+        setEnemyActing(false);
+      }
+
+      await sleep(220);
+    }
+
+    const nextState = pendingOnlineBattleStateRef.current || payload?.finalState;
+    pendingOnlineBattleStateRef.current = null;
+    onlineTurnAnimatingRef.current = false;
+
+    if (nextState) {
+      applyOnlineBattleState(nextState);
+    } else {
+      setBusy(false);
+    }
+  }
+
   function startLegacyOnlineBattle(roomId, selectedCharacters = {}) {
     const myCharacterId = selectedCharacters[username] || roomSelectedCharacter || selectedId || "alan_soma";
     const rivalUsername = roomPlayers.find((playerName) => playerName !== username);
@@ -404,6 +475,37 @@ export default function App() {
     const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
 
     setOnlineBattleMode(false);
+    setSelectedId(myCharacterId);
+    setRoomSelectedCharacter(myCharacterId);
+    setPlayer(nextPlayer);
+    setEnemy(nextEnemy);
+    setTurn(1);
+    setBusy(false);
+    setBattleOver(false);
+    setSelectedMoveId(null);
+    setMobileLogOpen(false);
+    setPreviewMoveId(null);
+    setPlayerPose("normal");
+    setEnemyPose("normal");
+    setPlayerActing(false);
+    setEnemyActing(false);
+    setPlayerFlashing(false);
+    setEnemyFlashing(false);
+    setLogs([
+      `Comienza la batalla online. ${nextPlayer.nombre} vs ${nextEnemy.nombre}.`,
+      `Sala: ${roomId || currentRoomId || "online"}.`
+    ]);
+    setScreen("battle");
+  }
+
+  function startOnlineBattlePreview(roomId, selectedCharacters = {}) {
+    const myCharacterId = selectedCharacters[username] || roomSelectedCharacter || selectedId || "alan_soma";
+    const rivalUsername = roomPlayers.find((playerName) => playerName !== username);
+    const rivalCharacterId = selectedCharacters[rivalUsername] || "ramon";
+    const nextPlayer = cloneCharacter(CHARACTERS[myCharacterId] || CHARACTERS.alan_soma);
+    const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
+
+    setOnlineBattleMode(true);
     setSelectedId(myCharacterId);
     setRoomSelectedCharacter(myCharacterId);
     setPlayer(nextPlayer);
@@ -475,6 +577,7 @@ export default function App() {
       if (onlineBattleFallbackRef.current) {
         clearTimeout(onlineBattleFallbackRef.current);
       }
+      startOnlineBattlePreview(roomId, selectedCharacters || {});
       onlineBattleFallbackRef.current = setTimeout(() => {
         startLegacyOnlineBattle(roomId, selectedCharacters || {});
       }, 1200);
@@ -482,7 +585,16 @@ export default function App() {
     }
 
     function onBattleState(state) {
+      if (onlineTurnAnimatingRef.current) {
+        pendingOnlineBattleStateRef.current = state;
+        return;
+      }
+
       applyOnlineBattleState(state);
+    }
+
+    function onTurnSequence(payload) {
+      playOnlineTurnSequence(payload);
     }
 
     socket.on("active_users", onActiveUsers);
@@ -491,6 +603,7 @@ export default function App() {
     socket.on("battle_started", onBattleStarted);
     socket.on("room_state", onRoomState);
     socket.on("start_online_battle", onStartOnlineBattle);
+    socket.on("turn_sequence", onTurnSequence);
     socket.on("battle_state", onBattleState);
 
     return () => {
@@ -505,6 +618,7 @@ export default function App() {
       socket.off("battle_started", onBattleStarted);
       socket.off("room_state", onRoomState);
       socket.off("start_online_battle", onStartOnlineBattle);
+      socket.off("turn_sequence", onTurnSequence);
       socket.off("battle_state", onBattleState);
     };
   }, []);
@@ -1016,7 +1130,6 @@ export default function App() {
     setPreviewMoveId(null);
     setBusy(true);
 
-    const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
     const enemyMove = pickAiMove(enemy);
     const firstIsPlayer =
       (playerMove.prioridad || 0) > (enemyMove.prioridad || 0)
@@ -1583,8 +1696,6 @@ export default function App() {
                         <button
                           disabled={disabled}
                           onClick={() => handleMoveClick(move)}
-                          onFocus={() => setPreviewMoveId(move.id)}
-                          onBlur={() => setPreviewMoveId((current) => (current === move.id ? null : current))}
                           onTouchStart={() => handleMoveTouchStart(move.id)}
                           onTouchEnd={handleMoveTouchEnd}
                           onTouchCancel={handleMoveTouchEnd}
@@ -1602,7 +1713,7 @@ export default function App() {
                         </button>
 
                         <div
-                          className={`pointer-events-none absolute inset-x-0 bottom-[calc(100%+0.55rem)] z-40 rounded-[20px] border border-slate-700/15 bg-slate-900/96 p-3 text-sm text-slate-100 shadow-2xl transition ${isPreviewOpen ? "visible opacity-100" : "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"}`}
+                          className={`pointer-events-none absolute inset-x-0 bottom-[calc(100%+0.55rem)] z-40 rounded-[20px] border border-slate-700/15 bg-slate-900/96 p-3 text-sm text-slate-100 shadow-2xl transition ${isPreviewOpen ? "visible opacity-100" : "invisible opacity-0 group-hover:visible group-hover:opacity-100"}`}
                         >
                           <div className="mb-1 flex items-center justify-between gap-3">
                             <div className="font-semibold">{move.nombre}</div>
@@ -1629,7 +1740,7 @@ export default function App() {
                     const disabled = battleOver || battleInputLocked || player.usos[move.id] <= 0;
                     const usage = player.usos[move.id];
                     const powerLabel = move.id === "tragar"
-                      ? "10% 1000 · 40% 200 · 10% 250 · 40% falla"
+                      ? "5% 1000 · 55% 200 · 40% falla"
                       : move.poder
                         ? `Poder ${move.poder}`
                         : "Sin daño base";

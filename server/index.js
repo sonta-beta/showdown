@@ -79,7 +79,6 @@ function cloneCharacter(base) {
     protegerTurno: false,
     esquivaAtaqueTurno: false,
     usos: Object.fromEntries(base.ataques.map((a) => [a.id, a.limiteUso])),
-    tragarChance: 10,
   };
 }
 
@@ -89,6 +88,14 @@ function randomInt(min, max) {
 
 function roll(percent) {
   return Math.random() * 100 < percent;
+}
+
+function rollTragarOutcome() {
+  const rollValue = Math.random() * 100;
+
+  if (rollValue < 5) return { hit: true, poder: 1000 };
+  if (rollValue < 60) return { hit: true, poder: 200 };
+  return { hit: false, poder: 0 };
 }
 
 function getDamage(attacker, defender, move) {
@@ -158,7 +165,6 @@ function buildBattlePublicState(room, viewerUsername) {
       hpActual: me.character.hpActual,
       ataques: me.character.ataques,
       usos: me.character.usos,
-      tragarChance: me.character.tragarChance,
       protegerTurno: me.character.protegerTurno,
       esquivaAtaqueTurno: me.character.esquivaAtaqueTurno,
     },
@@ -170,7 +176,6 @@ function buildBattlePublicState(room, viewerUsername) {
       hpActual: enemy.character.hpActual,
       ataques: enemy.character.ataques,
       usos: enemy.character.usos,
-      tragarChance: enemy.character.tragarChance,
       protegerTurno: enemy.character.protegerTurno,
       esquivaAtaqueTurno: enemy.character.esquivaAtaqueTurno,
     },
@@ -233,19 +238,17 @@ function applyMove(attacker, defender, move, attackerOwnerLabel, defenderPlanned
   }
 
   if (move.id === "tragar") {
-    const chance = nextAttacker.tragarChance;
-    const hit = roll(chance);
-    nextAttacker.tragarChance = 10;
+    const outcome = rollTragarOutcome();
 
-    if (!hit) {
+    if (!outcome.hit) {
       return {
         attacker: nextAttacker,
         defender: nextDefender,
-        text: `${attackerOwnerLabel} usó Tragar (${chance}%), pero falló.`,
+        text: `${attackerOwnerLabel} usó Tragar, pero falló.`,
       };
     }
 
-    if (nextDefender.esquivaAtaqueTurno) {
+    if (nextDefender.esquivaAtaqueTurno && outcome.poder === 1000) {
       const reducedMove = { ...move, poder: 200, efectividad: 100 };
       const dmg = getDamage(nextAttacker, nextDefender, reducedMove);
       nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
@@ -257,11 +260,17 @@ function applyMove(attacker, defender, move, attackerOwnerLabel, defenderPlanned
       };
     }
 
-    nextDefender.hpActual = 0;
+    const resolvedMove = { ...move, poder: outcome.poder, efectividad: 100 };
+    const dmg = getDamage(nextAttacker, nextDefender, resolvedMove);
+    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
+
     return {
       attacker: nextAttacker,
       defender: nextDefender,
-      text: `${attackerOwnerLabel} usó Tragar y devoró al rival al instante.`,
+      text:
+        outcome.poder === 1000
+          ? `${attackerOwnerLabel} usó Tragar con potencia máxima y causó ${dmg} de daño.`
+          : `${attackerOwnerLabel} usó Tragar con poder ${outcome.poder} y causó ${dmg} de daño.`,
     };
   }
 
@@ -435,8 +444,6 @@ function endTurnUpdate(p1, p2) {
   b.protegerTurno = false;
   a.esquivaAtaqueTurno = false;
   b.esquivaAtaqueTurno = false;
-  a.tragarChance = Math.min(35, a.tragarChance + 5);
-  b.tragarChance = Math.min(35, b.tragarChance + 5);
 
   return { a, b };
 }
