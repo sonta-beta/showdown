@@ -270,7 +270,7 @@ function BattleSprite({
         <img
           src={`/sprites/${fileName}`}
           alt={name}
-          className={`relative z-10 h-44 w-auto object-contain ${mirrored ? "scale-x-[-1]" : ""}`}
+          className={`relative z-10 h-28 w-auto object-contain md:h-44 ${mirrored ? "scale-x-[-1]" : ""}`}
           style={{
             transform: finalTransform,
             transformOrigin: "bottom center",
