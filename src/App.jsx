@@ -345,6 +345,7 @@ export default function App() {
   const queuedMoveTimeoutRef = useRef(null);
   const touchPreviewTimeoutRef = useRef(null);
   const longPressTriggeredRef = useRef(false);
+  const onlineBattleFallbackRef = useRef(null);
 
   const selectedCharacter = CHARACTERS[selectedId];
   const enemyBase = useMemo(
@@ -373,6 +374,11 @@ export default function App() {
   }
 
   function applyOnlineBattleState(battleState) {
+    if (onlineBattleFallbackRef.current) {
+      clearTimeout(onlineBattleFallbackRef.current);
+      onlineBattleFallbackRef.current = null;
+    }
+
     const nextPlayer = hydrateCharacterForBattle(battleState.me);
     const nextEnemy = hydrateCharacterForBattle(battleState.enemy);
 
@@ -386,6 +392,37 @@ export default function App() {
     setLogs(battleState.log || ["La batalla online comenzó."]);
     setBattleOver(Boolean(battleState.winner));
     setBusy(Boolean(battleState.pendingMoves?.me) && !battleState.winner);
+    setScreen("battle");
+  }
+
+  function startLegacyOnlineBattle(roomId, selectedCharacters = {}) {
+    const myCharacterId = selectedCharacters[username] || roomSelectedCharacter || selectedId || "alan_soma";
+    const rivalUsername = roomPlayers.find((playerName) => playerName !== username);
+    const rivalCharacterId = selectedCharacters[rivalUsername] || (myCharacterId === "alan_soma" ? "ramon" : "alan_soma");
+    const nextPlayer = cloneCharacter(CHARACTERS[myCharacterId] || CHARACTERS.alan_soma);
+    const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
+
+    setOnlineBattleMode(false);
+    setSelectedId(myCharacterId);
+    setRoomSelectedCharacter(myCharacterId);
+    setPlayer(nextPlayer);
+    setEnemy(nextEnemy);
+    setTurn(1);
+    setBusy(false);
+    setBattleOver(false);
+    setSelectedMoveId(null);
+    setMobileLogOpen(false);
+    setPreviewMoveId(null);
+    setPlayerPose("normal");
+    setEnemyPose("normal");
+    setPlayerActing(false);
+    setEnemyActing(false);
+    setPlayerFlashing(false);
+    setEnemyFlashing(false);
+    setLogs([
+      `Comienza la batalla online. ${nextPlayer.nombre} vs ${nextEnemy.nombre}.`,
+      `Sala: ${roomId || currentRoomId || "online"}.`
+    ]);
     setScreen("battle");
   }
 
@@ -405,6 +442,11 @@ export default function App() {
     }
 
     function onBattleStarted({ roomId, players }) {
+      if (onlineBattleFallbackRef.current) {
+        clearTimeout(onlineBattleFallbackRef.current);
+        onlineBattleFallbackRef.current = null;
+      }
+
       setCurrentRoomId(roomId);
       setRoomPlayers(players || []);
       setRoomReady({});
@@ -429,6 +471,12 @@ export default function App() {
       setOnlineBattleMode(true);
       setSelectedMoveId(null);
       setPreviewMoveId(null);
+      if (onlineBattleFallbackRef.current) {
+        clearTimeout(onlineBattleFallbackRef.current);
+      }
+      onlineBattleFallbackRef.current = setTimeout(() => {
+        startLegacyOnlineBattle(roomId, selectedCharacters || {});
+      }, 1200);
       setChallengeMessage(`La batalla comenzó en ${roomId}.`);
     }
 
@@ -445,6 +493,11 @@ export default function App() {
     socket.on("battle_state", onBattleState);
 
     return () => {
+      if (onlineBattleFallbackRef.current) {
+        clearTimeout(onlineBattleFallbackRef.current);
+        onlineBattleFallbackRef.current = null;
+      }
+
       socket.off("active_users", onActiveUsers);
       socket.off("challenge_received", onChallengeReceived);
       socket.off("challenge_rejected", onChallengeRejected);
