@@ -1519,13 +1519,8 @@ export default function App() {
               <div className="mb-3 overflow-hidden rounded-[28px] border border-slate-700/40 bg-[linear-gradient(180deg,#dfe7ef_0%,#bfd2e0_18%,#a8c1d4_48%,#8facbf_100%)] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] md:mb-5 md:p-4">
                 <div
                   className="relative h-[290px] w-full overflow-hidden rounded-[22px] border border-slate-800/30 bg-slate-900 bg-cover bg-center bg-no-repeat md:h-[430px]"
-                  style={{ backgroundImage: "url('/backgrounds/battle_bg.webp')" }}
+                  style={{ backgroundImage: "url('/backgrounds/battle_bg.png')" }}
                 >
-                  <img
-                    src="/backgrounds/battle_bg.png"
-                    alt="battle background"
-                    className="absolute inset-0 h-full w-full object-cover opacity-100"
-                  />
                   <div className="battle-stage-overlay absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12)_0%,rgba(15,23,42,0.06)_28%,rgba(15,23,42,0.18)_100%)]" />
                   <div className="battle-stage-floor absolute inset-x-0 bottom-0 h-24 bg-[linear-gradient(180deg,transparent_0%,rgba(15,23,42,0.22)_100%)]" />
                   <div className="absolute left-1/2 top-[32%] h-8 w-28 -translate-x-1/2 rounded-full bg-slate-950/15 blur-md md:top-[28%] md:h-10 md:w-52" />
