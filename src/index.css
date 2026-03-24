@@ -1,3 +1,4 @@
+@import url("https://fonts.googleapis.com/css2?family=Archivo+Black&display=swap");
 @import "tailwindcss";
 
 html, body, #root {
@@ -7,6 +8,81 @@ html, body, #root {
 }
 
 body {
-  font-family: system-ui, Arial, sans-serif;
-  background-color: #09090b;
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Trebuchet MS", "Helvetica Neue", Arial, sans-serif;
+  background: linear-gradient(180deg, #020617 0%, #0f172a 45%, #111827 100%);
+  color: #e5e7eb;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  border-radius: 0 !important;
+}
+
+.showdown-title {
+  font-family: "Archivo Black", "Segoe UI Variable Text", sans-serif;
+  letter-spacing: -0.04em;
+}
+
+.showdown-dark {
+  color: #e5e7eb;
+}
+
+.showdown-dark [class*="bg-white"],
+.showdown-dark [class*="bg-slate-50"],
+.showdown-dark [class*="bg-slate-100"],
+.showdown-dark [class*="bg-slate-200"],
+.showdown-dark [class*="bg-amber-50"],
+.showdown-dark [class*="bg-emerald-50"],
+.showdown-dark [class*="bg-sky-50"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#f6f8fb"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#fff7db"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#f8fbff"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#f7f9fc"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,rgba(255,255,255"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#dfe7ef"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#ffffff"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#eef4f9"],
+.showdown-dark [class*="bg-[linear-gradient(180deg,#f2faff"] {
+  background: #111827 !important;
+}
+
+.showdown-dark [class*="border-slate-"],
+.showdown-dark [class*="border-amber-"],
+.showdown-dark [class*="border-emerald-"],
+.showdown-dark [class*="border-sky-"] {
+  border-color: #334155 !important;
+}
+
+.showdown-dark [class*="text-slate-900"],
+.showdown-dark [class*="text-slate-800"],
+.showdown-dark [class*="text-slate-700"],
+.showdown-dark [class*="text-slate-600"],
+.showdown-dark [class*="text-slate-500"],
+.showdown-dark [class*="text-amber-900"],
+.showdown-dark [class*="text-amber-700"],
+.showdown-dark [class*="text-emerald-700"],
+.showdown-dark [class*="text-sky-700"] {
+  color: #e5e7eb !important;
+}
+
+.showdown-dark [class*="placeholder:text-slate-400"]::placeholder,
+.showdown-dark input::placeholder {
+  color: #94a3b8 !important;
+}
+
+.showdown-dark input,
+.showdown-dark button,
+.showdown-dark section,
+.showdown-dark aside,
+.showdown-dark header {
+  box-shadow: none !important;
+}
+
+.battle-stage-overlay {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.12) 0%, rgba(15, 23, 42, 0.06) 28%, rgba(15, 23, 42, 0.18) 100%) !important;
+}
+
+.battle-stage-floor {
+  background: linear-gradient(180deg, transparent 0%, rgba(15, 23, 42, 0.22) 100%) !important;
 }

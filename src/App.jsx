@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { socket } from "./lib/socket";
 
 const CHARACTERS = {
@@ -159,6 +159,31 @@ function roll(percent) {
   return Math.random() * 100 < percent;
 }
 
+function getMoveDetails(move) {
+  const details = [];
+
+  if (move.id === "tragar") {
+    details.push("10% poder 1000");
+    details.push("40% poder 200");
+    details.push("10% poder 250");
+    details.push("40% falla");
+  } else if (typeof move.poder === "number") {
+    details.push(`Poder ${move.poder}`);
+  } else {
+    details.push("Sin daño base");
+  }
+
+  if (typeof move.efectividad === "number") {
+    details.push(`Precision ${move.efectividad}%`);
+  }
+
+  if (typeof move.prioridad === "number") {
+    details.push(`Prioridad ${move.prioridad}`);
+  }
+
+  return details;
+}
+
 function rollTragarOutcome() {
   const roll = Math.random() * 100;
 
@@ -228,8 +253,12 @@ function BattleSprite({
   flashing = false
 }) {
   const fileName = getSpriteFileName(spriteKey, variant, pose);
-  const spritePosition = side === "enemy" ? "absolute left-1/2 top-24 -translate-x-1/2" : "absolute left-1/2 bottom-10 -translate-x-1/2";
-  const shadowPosition = side === "enemy" ? "absolute right-20 top-[58%] w-28" : "absolute left-20 bottom-6 w-32";
+  const spritePosition = side === "enemy"
+    ? "absolute bottom-0 left-1/2 -translate-x-1/2 md:top-24 md:bottom-auto"
+    : "absolute bottom-0 left-1/2 -translate-x-1/2 md:bottom-10";
+  const shadowPosition = side === "enemy"
+    ? "absolute bottom-2 left-1/2 w-24 -translate-x-1/2 md:right-20 md:left-auto md:top-[58%] md:bottom-auto md:w-28 md:translate-x-0"
+    : "absolute bottom-2 left-1/2 w-28 -translate-x-1/2 md:left-20 md:bottom-6 md:w-32";
   const attackOffset = side === "enemy" ? "translateX(-26px)" : "translateX(26px)";
   const finalTransform = `${mirrored ? "scaleX(-1) " : ""}${acting ? `${attackOffset} ` : ""}scale(${scale})`;
 
@@ -260,19 +289,19 @@ function BattleSprite({
 
 function HpPanel({ name, hp, maxHp, side = "enemy" }) {
   const hpPct = Math.max(0, (hp / maxHp) * 100);
-  const panelPosition = side === "enemy" ? "absolute right-4 top-4" : "absolute right-4 bottom-4";
+  const panelPosition = side === "enemy" ? "absolute right-2 top-2 md:right-4 md:top-4" : "absolute left-2 bottom-2 md:right-4 md:bottom-4";
 
   let hpColor = "bg-green-500";
   if (hpPct <= 50) hpColor = "bg-yellow-500";
   if (hpPct <= 20) hpColor = "bg-red-500";
 
   return (
-    <div className={`${panelPosition} z-30 w-56 rounded-xl border border-zinc-700 bg-zinc-900/95 px-3 py-2 shadow-lg`}>
+    <div className={`${panelPosition} z-30 w-40 rounded-[18px] border border-slate-900/15 bg-white/88 px-2 py-2 text-slate-900 shadow-[0_10px_24px_rgba(15,23,42,0.18)] backdrop-blur-sm md:w-56 md:px-3`}>
       <div className="mb-1 flex items-center justify-between gap-3">
-        <div className="text-sm font-semibold text-zinc-100">{name}</div>
-        <div className="text-xs text-zinc-400">{hp}/{maxHp} HP</div>
+        <div className="text-xs font-black tracking-[-0.02em] md:text-sm">{name}</div>
+        <div className="text-[10px] font-semibold text-slate-500 md:text-xs">{hp}/{maxHp} HP</div>
       </div>
-      <div className="h-3 w-full overflow-hidden rounded-full bg-zinc-800">
+      <div className="h-2.5 w-full overflow-hidden rounded-full bg-slate-200 md:h-3">
         <div
           className={`h-full rounded-full transition-all duration-300 ${hpColor}`}
           style={{ width: `${hpPct}%` }}
@@ -308,6 +337,12 @@ export default function App() {
   const [roomPlayers, setRoomPlayers] = useState([]);
   const [roomReady, setRoomReady] = useState({});
   const [roomSelectedCharacter, setRoomSelectedCharacter] = useState("alan_soma");
+  const [selectedMoveId, setSelectedMoveId] = useState(null);
+  const [mobileLogOpen, setMobileLogOpen] = useState(false);
+  const [previewMoveId, setPreviewMoveId] = useState(null);
+  const queuedMoveTimeoutRef = useRef(null);
+  const touchPreviewTimeoutRef = useRef(null);
+  const longPressTriggeredRef = useRef(false);
 
   const selectedCharacter = CHARACTERS[selectedId];
   const enemyBase = useMemo(
@@ -315,6 +350,7 @@ export default function App() {
     [selectedId]
   );
   const difficulty = DIFFICULTIES[difficultyId];
+  const selectedMove = player?.ataques.find((move) => move.id === selectedMoveId) ?? null;
 
   useEffect(() => {
     function onActiveUsers(list) {
@@ -471,11 +507,15 @@ export default function App() {
   }
 
   function startBattle() {
+    clearQueuedMove();
     setPlayer(cloneCharacter(selectedCharacter));
     setEnemy(cloneCharacter(enemyBase));
     setTurn(1);
     setBusy(false);
     setBattleOver(false);
+    setSelectedMoveId(null);
+    setMobileLogOpen(false);
+    setPreviewMoveId(null);
     setPlayerPose("normal");
     setEnemyPose("normal");
     setPlayerActing(false);
@@ -541,6 +581,56 @@ export default function App() {
     }
 
     return available[randomInt(0, available.length - 1)];
+  }
+
+  function clearTouchPreview() {
+    if (touchPreviewTimeoutRef.current) {
+      clearTimeout(touchPreviewTimeoutRef.current);
+      touchPreviewTimeoutRef.current = null;
+    }
+  }
+
+  function clearQueuedMove() {
+    if (queuedMoveTimeoutRef.current) {
+      clearTimeout(queuedMoveTimeoutRef.current);
+      queuedMoveTimeoutRef.current = null;
+    }
+  }
+
+  function handleMoveTouchStart(moveId) {
+    clearTouchPreview();
+    longPressTriggeredRef.current = false;
+    touchPreviewTimeoutRef.current = setTimeout(() => {
+      longPressTriggeredRef.current = true;
+      setPreviewMoveId(moveId);
+    }, 350);
+  }
+
+  function handleMoveTouchEnd() {
+    clearTouchPreview();
+    if (longPressTriggeredRef.current) {
+      setPreviewMoveId(null);
+    }
+  }
+
+  function handleMoveClick(move) {
+    if (longPressTriggeredRef.current) {
+      longPressTriggeredRef.current = false;
+      return;
+    }
+
+    clearQueuedMove();
+    setSelectedMoveId(move.id);
+    queuedMoveTimeoutRef.current = setTimeout(() => {
+      queuedMoveTimeoutRef.current = null;
+      setSelectedMoveId(null);
+      runTurn(move);
+    }, 900);
+  }
+
+  function handleCancelMove() {
+    clearQueuedMove();
+    setSelectedMoveId(null);
   }
 
   function applyMove(attacker, defender, move, chosenByPlayer, defenderMove) {
@@ -798,6 +888,9 @@ export default function App() {
 
   async function runTurn(playerMove) {
     if (!player || !enemy || battleOver || busy) return;
+    clearQueuedMove();
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
     setBusy(true);
 
     const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -923,137 +1016,174 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-zinc-100">
-      <div className="mx-auto flex min-h-screen max-w-6xl flex-col p-4 md:p-8">
-        <header className="mb-6 flex flex-col gap-2 border-b border-zinc-800 pb-4">
-          <h1 className="text-3xl font-black tracking-tight">Quick Showdown Prototype</h1>
-          <p className="text-sm text-zinc-400">
-            Partida rápida 1v1 con Alan Soma y Ramón, 3 dificultades y combate por turnos.
-          </p>
+    <div className="showdown-dark min-h-screen bg-[linear-gradient(180deg,#020617_0%,#0f172a_45%,#111827_100%)] text-slate-100">
+      <div className="mx-auto flex min-h-screen max-w-7xl flex-col p-3 md:p-6">
+        <header className="mb-4 rounded-[28px] border border-slate-900/15 bg-[linear-gradient(180deg,#f6f8fb_0%,#dce6f0_100%)] px-5 py-4 shadow-[0_18px_50px_rgba(15,23,42,0.16)] md:mb-6 md:px-6">
+          <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+            <div className="space-y-1">
+              <div className="text-[11px] font-black uppercase tracking-[0.35em] text-slate-500">Battle Client</div>
+              <h1 className="showdown-title text-3xl text-slate-100 md:text-4xl">Showdown34</h1>
+            </div>
+            <div className="flex items-center gap-2 self-start rounded-2xl border border-slate-900/10 bg-white/70 px-3 py-2 text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
+              <span className="h-2 w-2 rounded-full bg-emerald-500" />
+              Local Battle
+            </div>
+          </div>
         </header>
 
         {screen === "auth" && (
-          <div className="mx-auto w-full max-w-xl rounded-3xl border border-zinc-800 bg-zinc-900 p-6">
-            <h2 className="mb-2 text-2xl font-bold">Entrar al lobby</h2>
-            <p className="mb-5 text-sm text-zinc-400">
-              Primera versión del multijugador estilo Showdown: elegís un username y después podés retar a usuarios activos.
-            </p>
-
-            <div className="space-y-3">
-              <label className="block text-sm font-medium text-zinc-300">Nombre de usuario</label>
-              <input
-                value={usernameInput}
-                onChange={(e) => setUsernameInput(e.target.value)}
-                placeholder="Ej: Sonta"
-                className="w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-zinc-400"
-              />
-              <button
-                onClick={handleEnterLobby}
-                className="w-full rounded-2xl bg-zinc-100 px-4 py-3 font-bold text-zinc-950 transition hover:opacity-90"
-              >
-                Entrar
-              </button>
-            </div>
-
-            {challengeMessage && (
-              <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300">
-                {challengeMessage}
+          <div className="flex min-h-[62vh] items-center justify-center px-2">
+            <div className="w-full max-w-sm rounded-[32px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(239,245,250,0.98)_100%)] p-6 shadow-[0_24px_70px_rgba(15,23,42,0.18)]">
+              <div className="mb-5 flex items-center justify-between">
+                <div>
+                  <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Login</div>
+                  <h2 className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">Entrar al lobby</h2>
+                </div>
+                <div className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-700">
+                  Online
+                </div>
               </div>
-            )}
+
+              <div className="space-y-3">
+                <label className="block text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Usuario</label>
+                <input
+                  value={usernameInput}
+                  onChange={(e) => setUsernameInput(e.target.value)}
+                  placeholder="Ej: Sonta"
+                  className="w-full rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-[15px] font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400 focus:bg-sky-50/40"
+                />
+                <button
+                  onClick={handleEnterLobby}
+                  className="w-full rounded-[20px] bg-[linear-gradient(180deg,#0f172a_0%,#1e293b_100%)] px-4 py-3 text-sm font-black uppercase tracking-[0.2em] text-white transition hover:brightness-110"
+                >
+                  Entrar
+                </button>
+              </div>
+
+              {challengeMessage && (
+                <div className="mt-4 rounded-[22px] border border-amber-200 bg-amber-50 px-4 py-3 text-sm font-medium text-amber-900">
+                  {challengeMessage}
+                </div>
+              )}
+            </div>
           </div>
         )}
 
         {screen === "lobby" && (
-          <div className="grid gap-6 lg:grid-cols-[1.1fr_0.9fr]">
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <div className="mb-4 flex items-center justify-between gap-3">
-                <div>
-                  <h2 className="text-2xl font-bold">Lobby</h2>
-                  <p className="text-sm text-zinc-400">Usuario activo: {username}</p>
+          <section className="rounded-[32px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(235,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
+            <div className="mb-5 flex flex-col gap-4 border-b border-slate-900/8 pb-5 lg:flex-row lg:items-end lg:justify-between">
+              <div>
+                <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Lobby</div>
+                <h2 className="mt-1 text-3xl font-black tracking-[-0.04em] text-slate-900">Sala activa</h2>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-600">
+                  Usuario activo: <span className="font-black text-slate-900">{username}</span>
                 </div>
                 <button
                   onClick={() => setScreen("auth")}
-                  className="rounded-xl border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800"
+                  className="rounded-2xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
                 >
                   Cambiar usuario
                 </button>
               </div>
+            </div>
 
-              <div className="space-y-3">
-                {activeUsers.map((user) => (
-                  <div
-                    key={user.username}
-                    className="flex items-center justify-between rounded-2xl border border-zinc-800 bg-zinc-950 px-4 py-3"
-                  >
-                    <div>
-                      <div className="font-semibold text-zinc-100">{user.username}</div>
-                      <div className="text-sm text-zinc-400">
-                        {user.username === username ? "Vos" : user.status === "online" ? "Online" : "En batalla"}
-                      </div>
-                    </div>
-                    {user.username !== username && (
-                      <button
-                        onClick={() => handleSendChallenge(user.username)}
-                        disabled={user.status !== "online"}
-                        className={`rounded-xl px-4 py-2 text-sm font-semibold transition ${user.status === "online" ? "bg-zinc-100 text-zinc-950 hover:opacity-90" : "cursor-not-allowed border border-zinc-700 text-zinc-500"}`}
-                      >
-                        Retar
-                      </button>
-                    )}
+            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_360px]">
+              <div className="min-w-0">
+                <div className="mb-3 flex items-center justify-between">
+                  <div className="text-[11px] font-black uppercase tracking-[0.26em] text-slate-500">Jugadores conectados</div>
+                  <div className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-slate-500">
+                    {activeUsers.length} online
                   </div>
-                ))}
-              </div>
-            </section>
+                </div>
 
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-4 text-xl font-bold">Reto directo</h2>
-              <input
-                value={challengeTarget}
-                onChange={(e) => setChallengeTarget(e.target.value)}
-                placeholder="Escribí un username activo"
-                className="mb-3 w-full rounded-2xl border border-zinc-700 bg-zinc-950 px-4 py-3 text-zinc-100 outline-none placeholder:text-zinc-500 focus:border-zinc-400"
-              />
-              <button
-                onClick={() => handleSendChallenge(challengeTarget.trim())}
-                className="w-full rounded-2xl bg-zinc-100 px-4 py-3 font-bold text-zinc-950 transition hover:opacity-90"
-              >
-                Enviar reto
-              </button>
-
-              <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
-                <div className="font-semibold">Estado</div>
-                <div className="mt-1 text-zinc-400">{challengeMessage || "Todavía no enviaste ningún reto."}</div>
-              </div>
-
-              {incomingChallenge && (
-                <div className="mt-5 rounded-2xl border border-zinc-700 bg-zinc-950 p-4">
-                  <div className="text-sm font-semibold text-zinc-100">{incomingChallenge.from} te desafió</div>
-                  <div className="mt-1 text-sm text-zinc-400">Aceptá o rechazá el reto desde acá.</div>
-                  <div className="mt-4 flex gap-3">
-                    <button
-                      onClick={handleAcceptChallenge}
-                      className="flex-1 rounded-xl bg-zinc-100 px-4 py-2 font-semibold text-zinc-950"
+                <div className="overflow-hidden rounded-[26px] border border-slate-200 bg-white/75">
+                  {activeUsers.map((user, index) => (
+                    <div
+                      key={user.username}
+                      className={`flex items-center justify-between gap-3 px-4 py-4 ${index !== activeUsers.length - 1 ? "border-b border-slate-200/80" : ""}`}
                     >
-                      Aceptar
-                    </button>
+                      <div className="min-w-0">
+                        <div className="truncate text-base font-black tracking-[-0.02em] text-slate-900">{user.username}</div>
+                        <div className="mt-1 text-sm text-slate-500">
+                          {user.username === username ? "Vos" : user.status === "online" ? "Disponible para retar" : "En batalla"}
+                        </div>
+                      </div>
+                      {user.username === username ? (
+                        <div className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-sky-700">
+                          Vos
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => handleSendChallenge(user.username)}
+                          disabled={user.status !== "online"}
+                          className={`rounded-2xl px-4 py-2 text-sm font-black transition ${user.status === "online" ? "bg-slate-900 text-white hover:bg-slate-800" : "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"}`}
+                        >
+                          Retar
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="space-y-4">
+                <div className="rounded-[26px] border border-slate-200 bg-white/78 p-4">
+                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Reto directo</div>
+                  <div className="mt-3 space-y-3">
+                    <input
+                      value={challengeTarget}
+                      onChange={(e) => setChallengeTarget(e.target.value)}
+                      placeholder="Escribí un username activo"
+                      className="w-full rounded-[18px] border border-slate-200 bg-white px-4 py-3 text-[15px] font-semibold text-slate-900 outline-none placeholder:text-slate-400 focus:border-sky-400 focus:bg-sky-50/40"
+                    />
                     <button
-                      onClick={handleRejectChallenge}
-                      className="flex-1 rounded-xl border border-zinc-700 px-4 py-2 font-semibold text-zinc-100 hover:bg-zinc-800"
+                      onClick={() => handleSendChallenge(challengeTarget.trim())}
+                      className="w-full rounded-[18px] bg-[linear-gradient(180deg,#0f172a_0%,#1e293b_100%)] px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-white transition hover:brightness-110"
                     >
-                      Rechazar
+                      Enviar reto
                     </button>
                   </div>
                 </div>
-              )}
 
-              <button
-                onClick={handlePrepareLocalBattle}
-                className="mt-5 w-full rounded-2xl border border-zinc-700 px-4 py-3 font-semibold text-zinc-100 transition hover:bg-zinc-800"
-              >
-                Probar sala local
-              </button>
-            </section>
-          </div>
+                <div className="rounded-[26px] border border-slate-200 bg-white/78 p-4">
+                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Estado</div>
+                  <div className="mt-3 text-sm font-medium text-slate-300">
+                    {challengeMessage || "Conectado al lobby."}
+                  </div>
+                </div>
+
+                {incomingChallenge && (
+                  <div className="rounded-[26px] border border-amber-200 bg-[linear-gradient(180deg,#fff7db_0%,#ffefbf_100%)] p-4">
+                    <div className="text-[11px] font-black uppercase tracking-[0.24em] text-amber-700">Desafío entrante</div>
+                    <div className="mt-2 text-base font-black text-slate-900">{incomingChallenge.from} te desafió</div>
+                    <div className="mt-4 flex gap-3">
+                      <button
+                        onClick={handleAcceptChallenge}
+                        className="flex-1 rounded-[18px] bg-slate-900 px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-white transition hover:bg-slate-800"
+                      >
+                        Aceptar
+                      </button>
+                      <button
+                        onClick={handleRejectChallenge}
+                        className="flex-1 rounded-[18px] border border-slate-300 bg-white px-4 py-3 text-sm font-black uppercase tracking-[0.16em] text-slate-700 transition hover:bg-slate-50"
+                      >
+                        Rechazar
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                <button
+                  onClick={handlePrepareLocalBattle}
+                  className="w-full rounded-[22px] border border-slate-300 bg-white/85 px-4 py-4 text-sm font-black uppercase tracking-[0.18em] text-slate-700 transition hover:bg-white"
+                >
+                  Probar sala local
+                </button>
+              </div>
+            </div>
+          </section>
         )}
 
         {screen === "room" && (
@@ -1124,32 +1254,52 @@ export default function App() {
         )}
 
         {screen === "menu" && (
-          <div className="grid gap-6 lg:grid-cols-[1.2fr_0.8fr]">
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-4 text-xl font-bold">Elegí tu personaje</h2>
-              <div className="grid gap-4 md:grid-cols-2">
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
+            <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
+              <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Team Builder</div>
+                  <h2 className="text-2xl font-black tracking-[-0.04em] text-slate-900">Elegí tu personaje</h2>
+                </div>
+                <div className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-500">
+                  Usuario: {username || "Invitado"}
+                </div>
+              </div>
+
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {Object.values(CHARACTERS).map((char) => {
                   const selected = char.id === selectedId;
                   return (
                     <button
                       key={char.id}
                       onClick={() => setSelectedId(char.id)}
-                      className={`rounded-2xl border p-4 text-left transition ${selected ? "border-zinc-200 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-600"}`}
+                      className={`overflow-hidden rounded-[26px] border text-left transition ${selected ? "border-sky-500 bg-[linear-gradient(180deg,#f2faff_0%,#dbefff_100%)] shadow-[0_18px_40px_rgba(14,165,233,0.22)]" : "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] hover:border-slate-300 hover:bg-white"}`}
                     >
-                      <div className="mb-2 flex items-center justify-between">
-                        <span className="text-lg font-bold">{char.nombre}</span>
-                        {selected && (
-                          <span className="rounded-full bg-zinc-200 px-2 py-0.5 text-xs font-bold text-zinc-900">
-                            Seleccionado
+                      <div className="border-b border-slate-900/6 px-4 py-4">
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <span className="text-lg font-black tracking-[-0.03em] text-slate-900">{char.nombre}</span>
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.2em] ${selected ? "bg-sky-600 text-white" : "border border-slate-300 bg-white text-slate-500"}`}>
+                            {selected ? "Pick" : "Disponible"}
                           </span>
-                        )}
+                        </div>
                       </div>
-                      <p className="mb-3 text-sm text-zinc-400">{char.descripcion}</p>
-                      <div className="grid grid-cols-2 gap-2 text-sm text-zinc-300">
-                        <div>HP: {char.hp}</div>
-                        <div>Ataque: {char.ataque}</div>
-                        <div>Defensa: {char.defensa}</div>
-                        <div>Velocidad: {char.velocidad}</div>
+                      <div className="grid grid-cols-2 gap-x-3 gap-y-2 px-4 py-4 text-sm text-slate-700">
+                        <div className="rounded-2xl bg-white/70 px-3 py-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">HP</div>
+                          <div className="mt-1 font-black">{char.hp}</div>
+                        </div>
+                        <div className="rounded-2xl bg-white/70 px-3 py-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Ataque</div>
+                          <div className="mt-1 font-black">{char.ataque}</div>
+                        </div>
+                        <div className="rounded-2xl bg-white/70 px-3 py-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Defensa</div>
+                          <div className="mt-1 font-black">{char.defensa}</div>
+                        </div>
+                        <div className="rounded-2xl bg-white/70 px-3 py-2">
+                          <div className="text-[10px] font-black uppercase tracking-[0.18em] text-slate-400">Velocidad</div>
+                          <div className="mt-1 font-black">{char.velocidad}</div>
+                        </div>
                       </div>
                     </button>
                   );
@@ -1157,26 +1307,43 @@ export default function App() {
               </div>
             </section>
 
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-4 text-xl font-bold">Dificultad</h2>
-              <div className="space-y-3">
-                {Object.values(DIFFICULTIES).map((d) => (
-                  <button
-                    key={d.id}
-                    onClick={() => setDifficultyId(d.id)}
-                    className={`w-full rounded-2xl border p-4 text-left transition ${difficultyId === d.id ? "border-zinc-200 bg-zinc-800" : "border-zinc-800 bg-zinc-950 hover:border-zinc-600"}`}
-                  >
-                    <div className="font-bold">{d.nombre}</div>
-                    <div className="text-sm text-zinc-400">{d.aiDelayLabel}</div>
-                  </button>
-                ))}
+            <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+              <div className="mb-5">
+                <div className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-500">Battle Setup</div>
+                <h2 className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">{selectedCharacter.nombre}</h2>
               </div>
 
-              <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-950 p-4 text-sm text-zinc-300">
-                <div className="font-semibold">Rival automático</div>
-                <div className="mt-1 text-zinc-400">
-                  Usuario conectado: {username || "Invitado"}
-                  {currentRoomId ? ` · Sala: ${currentRoomId}` : ""}
+              <div className="rounded-[24px] border border-slate-200 bg-white/80 p-4">
+                <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Dificultad</div>
+                <div className="mt-3 space-y-3">
+                  {Object.values(DIFFICULTIES).map((d) => (
+                    <button
+                      key={d.id}
+                      onClick={() => setDifficultyId(d.id)}
+                      className={`w-full rounded-[20px] border px-4 py-3 text-left transition ${difficultyId === d.id ? "border-slate-900 bg-slate-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.22)]" : "border-slate-200 bg-white text-slate-800 hover:border-slate-300"}`}
+                    >
+                      <div className="font-black">{d.nombre}</div>
+                      <div className={`text-sm ${difficultyId === d.id ? "text-slate-300" : "text-slate-500"}`}>{d.aiDelayLabel}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
+                <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Resumen</div>
+                <div className="mt-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Personaje</span>
+                    <span className="font-black text-slate-900">{selectedCharacter.nombre}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Usuario</span>
+                    <span className="font-black text-slate-900">{username || "Invitado"}</span>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-slate-500">Sala</span>
+                    <span className="font-black text-slate-900">{currentRoomId || "Local"}</span>
+                  </div>
                 </div>
               </div>
 
@@ -1185,46 +1352,55 @@ export default function App() {
                   setSelectedId(roomSelectedCharacter || selectedId);
                   startBattle();
                 }}
-                className="mt-5 w-full rounded-2xl bg-zinc-100 px-4 py-3 font-bold text-zinc-950 transition hover:opacity-90"
+                className="mt-5 w-full rounded-[22px] bg-[linear-gradient(180deg,#0f172a_0%,#1e293b_100%)] px-4 py-4 text-sm font-black uppercase tracking-[0.2em] text-white transition hover:brightness-110"
               >
-                Iniciar partida rápida
+                Iniciar Showdown34
               </button>
             </section>
           </div>
         )}
 
         {screen === "battle" && player && enemy && (
-          <div className="grid gap-6 lg:grid-cols-[1.5fr_0.9fr]">
-            <section className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <div className="mb-4 flex items-center justify-between">
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.55fr)_320px] xl:grid-cols-[minmax(0,1.55fr)_360px]">
+            <section className="overflow-hidden rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e2e9f1_100%)] p-2 shadow-[0_22px_60px_rgba(15,23,42,0.18)] md:p-5">
+              <div className="mb-2 flex flex-row items-center justify-between gap-2 rounded-[24px] border border-slate-900/10 bg-white/80 px-3 py-2 shadow-sm md:mb-4 md:flex-row md:items-center md:justify-between md:px-5 md:py-3">
                 <div>
-                  <h2 className="text-xl font-bold">Combate</h2>
-                  <p className="text-sm text-zinc-400">
-                    Turno {turn} · Dificultad {difficulty.nombre}
-                  </p>
+                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Showdown34 Battle</div>
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900 md:text-2xl">Turno {turn}</h2>
                 </div>
-                <button
-                  onClick={() => setScreen("menu")}
-                  className="rounded-xl border border-zinc-700 px-3 py-2 text-sm hover:bg-zinc-800"
-                >
-                  Volver
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setScreen("menu")}
+                    className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white md:px-4 md:text-sm md:normal-case md:tracking-normal"
+                  >
+                    Volver
+                  </button>
+                  <button
+                    onClick={() => setMobileLogOpen(true)}
+                    className="lg:hidden rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white"
+                  >
+                    Log
+                  </button>
+                </div>
               </div>
 
-              <div className="mb-6 overflow-hidden rounded-3xl border border-zinc-800 bg-gradient-to-b from-zinc-800 via-zinc-900 to-zinc-950 p-4">
-                <div className="relative h-[420px] w-full rounded-2xl border border-zinc-700 overflow-hidden">
+              <div className="mb-3 overflow-hidden rounded-[28px] border border-slate-700/40 bg-[linear-gradient(180deg,#dfe7ef_0%,#bfd2e0_18%,#a8c1d4_48%,#8facbf_100%)] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] md:mb-5 md:p-4">
+                <div
+                  className="relative h-[290px] w-full overflow-hidden rounded-[22px] border border-slate-800/30 bg-slate-900 bg-cover bg-center bg-no-repeat md:h-[430px]"
+                  style={{ backgroundImage: "url('/backgrounds/battle_bg.webp')" }}
+                >
                   <img
                     src="/backgrounds/battle_bg.png"
                     alt="battle background"
-                    className="absolute inset-0 h-full w-full object-cover opacity-90"
+                    className="absolute inset-0 h-full w-full object-cover opacity-100"
                   />
-                  <div className="absolute inset-0 bg-black/30" />
-                  <div className="absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/10 to-transparent" />
-                  <div className="absolute left-1/2 top-[28%] h-10 w-52 -translate-x-1/2 rounded-full bg-black/20 blur-md" />
-                  <div className="absolute bottom-10 left-1/2 h-14 w-72 -translate-x-1/2 rounded-full bg-black/25 blur-md" />
+                  <div className="battle-stage-overlay absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12)_0%,rgba(15,23,42,0.06)_28%,rgba(15,23,42,0.18)_100%)]" />
+                  <div className="battle-stage-floor absolute inset-x-0 bottom-0 h-24 bg-[linear-gradient(180deg,transparent_0%,rgba(15,23,42,0.22)_100%)]" />
+                  <div className="absolute left-1/2 top-[32%] h-8 w-28 -translate-x-1/2 rounded-full bg-slate-950/15 blur-md md:top-[28%] md:h-10 md:w-52" />
+                  <div className="absolute bottom-5 left-1/2 h-8 w-40 -translate-x-1/2 rounded-full bg-slate-950/20 blur-md md:bottom-10 md:h-14 md:w-72" />
 
                   <HpPanel name={enemy.nombre} hp={enemy.hpActual} maxHp={enemy.hp} side="enemy" />
-                  <div className="absolute bottom-6 left-[35%] h-56 w-72 -translate-x-1/2">
+                  <div className="absolute bottom-4 left-[40%] h-32 w-40 -translate-x-1/2 md:bottom-6 md:left-[35%] md:h-56 md:w-72">
                     <BattleSprite
                       spriteKey={player.id}
                       name={player.nombre}
@@ -1238,7 +1414,7 @@ export default function App() {
                   </div>
 
                   <HpPanel name={player.nombre} hp={player.hpActual} maxHp={player.hp} side="player" />
-                  <div className="absolute left-[65%] top-8 h-48 w-64 -translate-x-1/2">
+                  <div className="absolute bottom-14 left-[62%] h-32 w-40 -translate-x-1/2 md:top-8 md:bottom-auto md:left-[65%] md:h-48 md:w-64">
                     <BattleSprite
                       spriteKey={enemy.id}
                       name={enemy.nombre}
@@ -1254,12 +1430,81 @@ export default function App() {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-zinc-800 bg-zinc-950 p-4">
-                <div className="mb-3 text-sm font-semibold text-zinc-300">Tus ataques</div>
-                <div className="grid gap-3 md:grid-cols-3">
+              <div className="rounded-[28px] border border-slate-900/10 bg-white/80 p-3 shadow-sm md:p-4">
+                <div className="mb-2 flex items-center justify-between gap-3 md:mb-3">
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Moves</div>
+                    <div className="text-base font-black text-slate-900 md:text-lg">Tus ataques</div>
+                  </div>
+                </div>
+                <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
                   {player.ataques.map((move) => {
                     const disabled = battleOver || busy || player.usos[move.id] <= 0;
                     const usage = player.usos[move.id];
+                    const moveDetails = getMoveDetails(move);
+                    const isPreviewOpen = previewMoveId === move.id;
+                    const isSelected = selectedMoveId === move.id;
+
+                    return (
+                      <div
+                        key={move.id}
+                        className="group relative"
+                        onMouseEnter={() => setPreviewMoveId(move.id)}
+                        onMouseLeave={() => setPreviewMoveId((current) => (current === move.id ? null : current))}
+                      >
+                        <button
+                          disabled={disabled}
+                          onClick={() => handleMoveClick(move)}
+                          onFocus={() => setPreviewMoveId(move.id)}
+                          onBlur={() => setPreviewMoveId((current) => (current === move.id ? null : current))}
+                          onTouchStart={() => handleMoveTouchStart(move.id)}
+                          onTouchEnd={handleMoveTouchEnd}
+                          onTouchCancel={handleMoveTouchEnd}
+                          className={`min-h-[72px] w-full rounded-[22px] border px-3 py-2.5 text-left transition md:min-h-24 md:px-4 md:py-3 ${disabled ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400" : isSelected ? "border-sky-500 bg-[linear-gradient(180deg,#1e293b_0%,#0f172a_100%)] text-slate-100 shadow-[0_12px_24px_rgba(14,165,233,0.18)]" : "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] text-slate-800 hover:border-sky-400 hover:bg-white hover:shadow-[0_12px_24px_rgba(56,189,248,0.14)]"}`}
+                        >
+                          <div className="flex items-start justify-between gap-3">
+                            <div>
+                              <div className="text-sm font-black tracking-[-0.02em] md:text-base">{move.nombre}</div>
+                              <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 md:text-xs md:tracking-[0.24em]">{move.tipo}</div>
+                            </div>
+                            <div className="rounded-full border border-slate-300 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-500 md:text-xs">
+                              {usage}
+                            </div>
+                          </div>
+                        </button>
+
+                        <div
+                          className={`pointer-events-none absolute inset-x-0 bottom-[calc(100%+0.55rem)] z-40 rounded-[20px] border border-slate-700/15 bg-slate-900/96 p-3 text-sm text-slate-100 shadow-2xl transition ${isPreviewOpen ? "visible opacity-100" : "invisible opacity-0 group-hover:visible group-hover:opacity-100 group-focus-within:visible group-focus-within:opacity-100"}`}
+                        >
+                          <div className="mb-1 flex items-center justify-between gap-3">
+                            <div className="font-semibold">{move.nombre}</div>
+                            <div className="text-[10px] uppercase tracking-[0.25em] text-slate-400">{move.tipo}</div>
+                          </div>
+                          <div className="text-slate-300">{move.descripcion}</div>
+                          <div className="mt-2 flex flex-wrap gap-2 text-[11px] text-slate-300">
+                            {moveDetails.map((detail) => (
+                              <span key={detail} className="rounded-full border border-slate-700 px-2 py-1">
+                                {detail}
+                              </span>
+                            ))}
+                            <span className="rounded-full border border-slate-700 px-2 py-1">
+                              Usos {usage}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="hidden">
+                  {player.ataques.map((move) => {
+                    const disabled = battleOver || busy || player.usos[move.id] <= 0;
+                    const usage = player.usos[move.id];
+                    const powerLabel = move.id === "tragar"
+                      ? "10% 1000 · 40% 200 · 10% 250 · 40% falla"
+                      : move.poder
+                        ? `Poder ${move.poder}`
+                        : "Sin daño base";
 
                     return (
                       <button
@@ -1273,7 +1518,7 @@ export default function App() {
                           <span className="text-xs text-zinc-400">{move.tipo}</span>
                         </div>
                         <div className="text-sm text-zinc-400">
-                          {move.poder ? `Poder ${move.poder}` : "Sin daño base"}
+                          {powerLabel}
                           {move.efectividad ? ` · ${move.efectividad}%` : ""}
                         </div>
                         <div className="mt-2 text-xs text-zinc-500">Usos restantes: {usage}</div>
@@ -1281,16 +1526,41 @@ export default function App() {
                     );
                   })}
                 </div>
+                <div className="mt-3 rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#f8fbff_0%,#e8f1f8_100%)] p-3 md:mt-4 md:p-4">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Confirmación</div>
+                      <div className="text-sm font-black text-slate-900 md:text-lg">
+                        {selectedMove ? `Movimiento elegido: ${selectedMove.nombre}` : "Todavía no elegiste un movimiento"}
+                      </div>
+                      {selectedMove && (
+                        <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-500 md:text-xs md:tracking-[0.2em]">
+                          Se ejecuta automáticamente
+                        </div>
+                      )}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        onClick={handleCancelMove}
+                        disabled={!selectedMove || busy}
+                        className={`rounded-2xl px-3 py-2 text-xs font-bold uppercase tracking-[0.14em] transition md:px-4 md:py-3 md:text-sm md:normal-case md:tracking-normal ${!selectedMove || busy ? "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400" : "border border-slate-300 bg-white text-slate-700 hover:bg-slate-50"}`}
+                      >
+                        Cancelar
+                      </button>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               {battleOver && (
-                <div className="mt-4 rounded-2xl border border-zinc-700 bg-zinc-950 p-4 text-center">
-                  <div className="text-lg font-bold">
+                <div className="mt-3 rounded-[26px] border border-slate-900/10 bg-[linear-gradient(180deg,#fff7db_0%,#ffe4a3_100%)] p-3 text-center text-slate-900 shadow-sm md:mt-4 md:p-4">
+                  <div className="text-[11px] font-black uppercase tracking-[0.3em] text-amber-700">Resultado</div>
+                  <div className="mt-1 text-xl font-black md:text-2xl">
                     {player.hpActual > 0 && enemy.hpActual <= 0 ? "Victoria" : player.hpActual <= 0 && enemy.hpActual > 0 ? "Derrota" : "Empate"}
                   </div>
                   <button
                     onClick={startBattle}
-                    className="mt-3 rounded-xl bg-zinc-100 px-4 py-2 font-bold text-zinc-950"
+                    className="mt-3 rounded-2xl bg-slate-900 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-slate-800 md:px-5 md:py-3 md:text-sm md:tracking-[0.18em]"
                   >
                     Jugar otra vez
                   </button>
@@ -1298,19 +1568,59 @@ export default function App() {
               )}
             </section>
 
-            <aside className="rounded-3xl border border-zinc-800 bg-zinc-900 p-5">
-              <h2 className="mb-4 text-xl font-bold">Log de batalla</h2>
+            <aside className="hidden lg:block rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e6edf4_100%)] p-4 shadow-[0_22px_60px_rgba(15,23,42,0.16)] md:p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Battle Feed</div>
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900">Log de batalla</h2>
+                </div>
+                <div className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-bold text-slate-500">
+                  {logs.length} eventos
+                </div>
+              </div>
               <div className="space-y-2">
                 {logs.map((line, i) => (
                   <div
                     key={`${line}-${i}`}
-                    className="rounded-xl border border-zinc-800 bg-zinc-950 p-3 text-sm text-zinc-300"
+                    className={`rounded-[20px] border px-4 py-3 text-sm shadow-sm ${i === 0 ? "border-sky-200 bg-sky-50 text-slate-800" : "border-slate-200 bg-white/80 text-slate-700"}`}
                   >
                     {line}
                   </div>
                 ))}
               </div>
             </aside>
+          </div>
+        )}
+
+        {screen === "battle" && player && enemy && mobileLogOpen && (
+          <div className="fixed inset-0 z-50 bg-slate-950/70 lg:hidden" onClick={() => setMobileLogOpen(false)}>
+            <div
+              className="absolute inset-x-0 bottom-0 max-h-[70vh] overflow-hidden border border-slate-700 bg-slate-950"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Battle Feed</div>
+                  <h2 className="text-lg font-black text-slate-100">Log de batalla</h2>
+                </div>
+                <button
+                  onClick={() => setMobileLogOpen(false)}
+                  className="border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200"
+                >
+                  Cerrar
+                </button>
+              </div>
+              <div className="max-h-[calc(70vh-74px)] space-y-2 overflow-y-auto p-4">
+                {logs.map((line, i) => (
+                  <div
+                    key={`mobile-${line}-${i}`}
+                    className={`border px-4 py-3 text-sm ${i === 0 ? "border-sky-700 bg-sky-950/40 text-slate-100" : "border-slate-800 bg-slate-900 text-slate-300"}`}
+                  >
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </div>
