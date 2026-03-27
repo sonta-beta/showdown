@@ -718,6 +718,19 @@ io.on("connection", (socket) => {
     }
 
     const user = users.get(username);
+    const existingRoomData = getRoomByUsername(username);
+
+    if (existingRoomData?.room?.mode === ROOM_MODES.free_for_all && !existingRoomData.room.battle) {
+      socket.join(existingRoomData.roomId);
+      emitRoomState(existingRoomData.roomId);
+      emitFfaRooms();
+      return callback?.({
+        ok: true,
+        roomId: existingRoomData.roomId,
+        message: "Ya tenés una sala FFA abierta."
+      });
+    }
+
     if (!user || user.status !== "online") {
       return callback?.({ ok: false, message: "No podés crear una sala ahora." });
     }
@@ -750,6 +763,18 @@ io.on("connection", (socket) => {
 
     const user = users.get(username);
     const room = rooms.get(roomId);
+    const existingRoomData = getRoomByUsername(username);
+
+    if (existingRoomData?.roomId === roomId && room?.mode === ROOM_MODES.free_for_all && !room?.battle) {
+      socket.join(roomId);
+      emitRoomState(roomId);
+      emitFfaRooms();
+      return callback?.({
+        ok: true,
+        roomId,
+        message: "Volviste a tu sala FFA."
+      });
+    }
 
     if (!user || user.status !== "online") {
       return callback?.({ ok: false, message: "No podés entrar a una sala ahora." });
@@ -757,10 +782,6 @@ io.on("connection", (socket) => {
 
     if (!room || room.mode !== ROOM_MODES.free_for_all || !room.isPublic || room.battle) {
       return callback?.({ ok: false, message: "La sala FFA ya no está disponible." });
-    }
-
-    if (room.players.includes(username)) {
-      return callback?.({ ok: true, roomId });
     }
 
     if (room.players.length >= room.maxPlayers) {

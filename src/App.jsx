@@ -1285,7 +1285,7 @@ export default function App() {
         return;
       }
 
-      setChallengeMessage(`Sala FFA creada: ${response.roomId}.`);
+      setChallengeMessage(response?.message || `Sala FFA creada: ${response.roomId}.`);
     });
   }
 
@@ -1296,7 +1296,38 @@ export default function App() {
         return;
       }
 
-      setChallengeMessage(`Entraste a la sala FFA ${roomId}.`);
+      setChallengeMessage(response?.message || `Entraste a la sala FFA ${roomId}.`);
+    });
+  }
+
+  function handleLeaveRoom() {
+    if (!currentRoomId) {
+      setScreen("lobby");
+      return;
+    }
+
+    socket.emit("leave_battle", { roomId: currentRoomId }, (response) => {
+      if (!response?.ok) {
+        setChallengeMessage("No se pudo salir de la sala.");
+        return;
+      }
+
+      setCurrentRoomId("");
+      setCurrentRoomMode("duel");
+      setCurrentRoomMaxPlayers(2);
+      setRoomPlayers([]);
+      setRoomReady({});
+      setRoomSelectedCharacters({});
+      setOnlineBattleMode(false);
+      setOnlineFfaCombatants([]);
+      setOnlineFfaSpriteStates({});
+      setSelectedMoveId(null);
+      setPreviewMoveId(null);
+      setBusy(false);
+      setBattleOver(false);
+      setActiveHomeTab(activeHomeTab === "salas_ffa" ? "salas_ffa" : "salas");
+      setChallengeMessage("Saliste de la sala.");
+      setScreen("lobby");
     });
   }
 
@@ -1984,21 +2015,27 @@ export default function App() {
                       <div className="px-4 py-4 text-sm text-slate-500">No hay salas públicas FFA abiertas.</div>
                     ) : (
                       availableFfaRooms.map((room, index) => (
-                        <div
-                          key={room.roomId}
-                          className={`flex items-center justify-between gap-3 px-4 py-4 ${index !== availableFfaRooms.length - 1 ? "border-b border-slate-200/80" : ""}`}
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate text-base font-black tracking-[-0.02em] text-slate-900">{room.roomId}</div>
-                            <div className="mt-1 text-sm text-slate-500">{room.count}/{room.maxPlayers} jugadores · {room.players.join(", ")}</div>
-                          </div>
-                          <button
-                            onClick={() => handleJoinFfaRoom(room.roomId)}
-                            className="rounded-2xl px-4 py-2 text-sm font-black transition"
-                          >
-                            Unirse
-                          </button>
-                        </div>
+                        (() => {
+                          const isMyRoom = room.players.includes(username);
+
+                          return (
+                            <div
+                              key={room.roomId}
+                              className={`flex items-center justify-between gap-3 px-4 py-4 ${index !== availableFfaRooms.length - 1 ? "border-b border-slate-200/80" : ""}`}
+                            >
+                              <div className="min-w-0">
+                                <div className="truncate text-base font-black tracking-[-0.02em] text-slate-900">{room.roomId}</div>
+                                <div className="mt-1 text-sm text-slate-500">{room.count}/{room.maxPlayers} jugadores · {room.players.join(", ")}</div>
+                              </div>
+                              <button
+                                onClick={() => handleJoinFfaRoom(room.roomId)}
+                                className={`rounded-2xl px-4 py-2 text-sm font-black transition ${isMyRoom ? "border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100" : "bg-slate-900 text-white hover:bg-slate-800"}`}
+                              >
+                                {isMyRoom ? "Abrir" : "Unirse"}
+                              </button>
+                            </div>
+                          );
+                        })()
                       ))
                     )
                   ) : (
@@ -2069,25 +2106,29 @@ export default function App() {
                           No hay salas públicas FFA abiertas.
                         </div>
                       ) : (
-                        availableFfaRooms.map((room) => (
-                          <div key={room.roomId} className="rounded-[20px] border border-slate-200 bg-white px-4 py-3">
-                            <div className="flex items-center justify-between gap-3">
-                              <div>
-                                <div className="font-black text-slate-900">{room.roomId}</div>
-                                <div className="text-sm text-slate-500">{room.count}/{room.maxPlayers} jugadores</div>
+                        availableFfaRooms.map((room) => {
+                          const isMyRoom = room.players.includes(username);
+
+                          return (
+                            <div key={room.roomId} className="rounded-[20px] border border-slate-200 bg-white px-4 py-3">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <div className="font-black text-slate-900">{room.roomId}</div>
+                                  <div className="text-sm text-slate-500">{room.count}/{room.maxPlayers} jugadores</div>
+                                </div>
+                                <button
+                                  onClick={() => handleJoinFfaRoom(room.roomId)}
+                                  className={`rounded-2xl px-3 py-2 text-xs font-black uppercase tracking-[0.16em] transition ${isMyRoom ? "border border-sky-200 bg-sky-50 text-sky-700 hover:bg-sky-100" : "border border-slate-300 bg-slate-100 text-slate-700 hover:bg-white"}`}
+                                >
+                                  {isMyRoom ? "Abrir" : "Unirse"}
+                                </button>
                               </div>
-                              <button
-                                onClick={() => handleJoinFfaRoom(room.roomId)}
-                                className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:bg-white"
-                              >
-                                Unirse
-                              </button>
+                              <div className="mt-2 text-sm text-slate-500">
+                                {room.players.join(", ")}
+                              </div>
                             </div>
-                            <div className="mt-2 text-sm text-slate-500">
-                              {room.players.join(", ")}
-                            </div>
-                          </div>
-                        ))
+                          );
+                        })
                       )}
                     </div>
                   </div>
@@ -2135,7 +2176,15 @@ export default function App() {
         {screen === "room" && (
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
             <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
-              <h2 className="mb-2 text-2xl font-black tracking-[-0.04em] text-slate-900">Sala previa</h2>
+              <div className="mb-2 flex items-center justify-between gap-3">
+                <h2 className="text-2xl font-black tracking-[-0.04em] text-slate-900">Sala previa</h2>
+                <button
+                  onClick={handleLeaveRoom}
+                  className="rounded-2xl border border-slate-300 bg-white px-4 py-2 text-xs font-black uppercase tracking-[0.14em] text-slate-700 transition hover:bg-slate-50"
+                >
+                  Salir
+                </button>
+              </div>
 
               <div className="mb-5 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
                 <div className="font-semibold">Sala</div>
