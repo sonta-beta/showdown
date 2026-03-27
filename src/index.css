@@ -297,11 +297,22 @@ textarea {
 
 .showdown-dark .battle-stage-overlay {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(0, 0, 0, 0.18) 24%, rgba(0, 0, 0, 0.56) 100%) !important;
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(0, 0, 0, 0.08) 26%, rgba(0, 0, 0, 0.34) 100%) !important;
 }
 
 .showdown-dark .battle-stage-floor {
-  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.76) 100%) !important;
+  background: linear-gradient(180deg, transparent 0%, rgba(0, 0, 0, 0.56) 100%) !important;
+}
+
+.battle-stage-surface {
+  position: relative;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+  background-color: #101418;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.14),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.24);
 }
 
 .showdown-dark .group > div[class*="bg-slate-900/96"] {

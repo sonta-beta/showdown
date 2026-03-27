@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { socket } from "./lib/socket";
-import battleBackground from "./assets/battle_bg.png";
 import {
   buildDefaultFfaSlots as buildDefaultFfaSlotsShared,
   CHARACTERS as CHARACTERS_SHARED,
@@ -20,6 +19,15 @@ import {
   resolveMove as resolveMoveShared
 } from "./lib/gameEngine";
 import { pickAiMove as pickAiMoveShared } from "./lib/ai";
+import {
+  ADVENTURE_ACHIEVEMENT,
+  DEFAULT_BATTLE_BACKGROUND,
+  ADVENTURE_DIFFICULTY_MODIFIERS,
+  ADVENTURE_LEVELS,
+  getAdventureLevel
+} from "./lib/adventureData";
+
+const BROWSER_CACHE_KEY = "showdown34.browser-cache.v1";
 
 const CHARACTERS = {
   alan_soma: {
@@ -217,6 +225,163 @@ function getSpriteFileName(spriteKey, variant, pose = "normal") {
   return getSpriteFileNameShared(spriteKey, variant, pose);
 }
 
+function buildDefaultBrowserCache() {
+  return {
+    lastUsername: "",
+    lastHomeTab: "jugar_local",
+    selectedCharacterId: "alan_soma",
+    adventureProfiles: {}
+  };
+}
+
+function buildAdventureProfile(username = "") {
+  return {
+    username,
+    completedLevelIds: [],
+    achievementUnlocked: false
+  };
+}
+
+function normalizeAdventureProfiles(rawProfiles) {
+  if (!rawProfiles || typeof rawProfiles !== "object") {
+    return {};
+  }
+
+  return Object.fromEntries(
+    Object.entries(rawProfiles).map(([username, value]) => {
+      const completedLevelIds = Array.isArray(value?.completedLevelIds)
+        ? ADVENTURE_LEVELS
+          .filter((level) => value.completedLevelIds.includes(level.id))
+          .map((level) => level.id)
+        : [];
+
+      return [
+        username,
+        {
+          username: value?.username || username,
+          completedLevelIds,
+          achievementUnlocked: Boolean(value?.achievementUnlocked)
+        }
+      ];
+    })
+  );
+}
+
+function readBrowserCache() {
+  const fallback = buildDefaultBrowserCache();
+
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(BROWSER_CACHE_KEY);
+    if (!rawValue) {
+      return fallback;
+    }
+
+    const parsed = JSON.parse(rawValue);
+    return {
+      lastUsername: typeof parsed?.lastUsername === "string" ? parsed.lastUsername : fallback.lastUsername,
+      lastHomeTab: typeof parsed?.lastHomeTab === "string" ? parsed.lastHomeTab : fallback.lastHomeTab,
+      selectedCharacterId: typeof parsed?.selectedCharacterId === "string" ? parsed.selectedCharacterId : fallback.selectedCharacterId,
+      adventureProfiles: normalizeAdventureProfiles(parsed?.adventureProfiles)
+    };
+  } catch (error) {
+    return fallback;
+  }
+}
+
+function writeBrowserCache(nextCache) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(BROWSER_CACHE_KEY, JSON.stringify(nextCache));
+}
+
+function getAdventureProfileState(profiles, username) {
+  if (!username) {
+    return buildAdventureProfile(username);
+  }
+
+  return profiles[username] || buildAdventureProfile(username);
+}
+
+function isAdventureLevelUnlocked(level, completedLevelIds) {
+  const completedSet = completedLevelIds instanceof Set
+    ? completedLevelIds
+    : new Set(completedLevelIds);
+
+  if (level.orden <= 1) {
+    return true;
+  }
+
+  const previousLevel = ADVENTURE_LEVELS.find((candidate) => candidate.orden === level.orden - 1);
+  return previousLevel ? completedSet.has(previousLevel.id) : false;
+}
+
+function completeAdventureProgress(profiles, username, levelId) {
+  const currentProfile = getAdventureProfileState(profiles, username);
+  const completedSet = new Set(currentProfile.completedLevelIds);
+  completedSet.add(levelId);
+
+  const completedLevelIds = ADVENTURE_LEVELS
+    .filter((level) => completedSet.has(level.id))
+    .map((level) => level.id);
+  const completedAll = completedLevelIds.length === ADVENTURE_LEVELS.length;
+  const updatedProfile = {
+    ...currentProfile,
+    username,
+    completedLevelIds,
+    achievementUnlocked: currentProfile.achievementUnlocked || completedAll
+  };
+
+  return {
+    nextProfiles: {
+      ...profiles,
+      [username]: updatedProfile
+    },
+    updatedProfile,
+    unlockedAchievement: !currentProfile.achievementUnlocked && updatedProfile.achievementUnlocked,
+    nextLevel: ADVENTURE_LEVELS.find((level) => !completedLevelIds.includes(level.id)) || null
+  };
+}
+
+function scaleAdventureStat(value, factor) {
+  return Math.max(1, Math.round(value * factor));
+}
+
+function buildAdventureCharacter(baseCharacter, difficultyId) {
+  const modifier = ADVENTURE_DIFFICULTY_MODIFIERS[difficultyId] || ADVENTURE_DIFFICULTY_MODIFIERS.dificil;
+
+  return {
+    ...baseCharacter,
+    hp: scaleAdventureStat(baseCharacter.hp, modifier.hp),
+    ataque: scaleAdventureStat(baseCharacter.ataque, modifier.ataque),
+    defensa: scaleAdventureStat(baseCharacter.defensa, modifier.defensa),
+    velocidad: scaleAdventureStat(baseCharacter.velocidad, modifier.velocidad)
+  };
+}
+
+function getAdventureDifficultyConfig(level) {
+  if (!level) {
+    return DIFFICULTIES.normal;
+  }
+
+  return {
+    id: level.dificultadId,
+    nombre: level.dificultadId,
+    aiBiasStrong:
+      level.dificultadId === "facil"
+        ? 0.2
+        : level.dificultadId === "normal"
+          ? 0.45
+          : 0.78,
+    aiDelayLabel: "Aventura"
+  };
+}
+
 function runSelfTests() {
   const alan = cloneCharacter(CHARACTERS.alan_soma);
   const ramon = cloneCharacter(CHARACTERS.ramon);
@@ -258,7 +423,42 @@ function runSelfTests() {
   }
 }
 
+/*
+  if (ADVENTURE_LEVELS.length !== 10) {
+    throw new Error("Test failed: la aventura deberÃ­a tener 10 niveles.");
+  }
+
+  if (ADVENTURE_ACHIEVEMENT.id !== "orgullo_epet_34") {
+    throw new Error("Test failed: el logro final de aventura no coincide.");
+  }
+}
+*/
+
 runSelfTests();
+
+function runAdventureSelfTests() {
+  if (ADVENTURE_LEVELS.length !== 10) {
+    throw new Error("Test failed: la aventura deberia tener 10 niveles.");
+  }
+
+  if (ADVENTURE_ACHIEVEMENT.id !== "orgullo_epet_34") {
+    throw new Error("Test failed: el logro final de aventura no coincide.");
+  }
+}
+
+function getStageBackgroundStyle(background) {
+  const resolvedBackground = background?.imagen ? background : DEFAULT_BATTLE_BACKGROUND;
+
+  return {
+    backgroundImage: `url(${resolvedBackground.imagen})`,
+    backgroundPosition: resolvedBackground.posicion || "center",
+    backgroundSize: "cover",
+    backgroundRepeat: "no-repeat",
+    backgroundColor: "#101418"
+  };
+}
+
+runAdventureSelfTests();
 
 function BattleSprite({
   spriteKey,
@@ -641,7 +841,8 @@ function FfaBattleArena({
   spriteStates = {},
   turn,
   arenaLabel = "Free For All",
-  turnNote = ""
+  turnNote = "",
+  stageBackground = null
 }) {
   const stageRef = useRef(null);
   const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
@@ -692,7 +893,7 @@ function FfaBattleArena({
         <div
           ref={stageRef}
           className="ffa-showdown-stage"
-          style={{ backgroundImage: `url(${battleBackground})` }}
+          style={getStageBackgroundStyle(stageBackground)}
         >
           <div className="ffa-showdown-stage-overlay" />
           <div className="ffa-showdown-stage-floor" />
@@ -751,10 +952,10 @@ function FfaBattleArena({
 }
 
 export default function App() {
-  const [screen, setScreen] = useState("auth");
-  const [activeHomeTab, setActiveHomeTab] = useState("jugar_local");
+  const [screen, setScreen] = useState(() => (readBrowserCache().lastHomeTab === "jugar_local" ? "menu" : "auth"));
+  const [activeHomeTab, setActiveHomeTab] = useState(() => readBrowserCache().lastHomeTab || "jugar_local");
   const [gameModeId, setGameModeId] = useState("duel");
-  const [selectedId, setSelectedId] = useState("alan_soma");
+  const [selectedId, setSelectedId] = useState(() => readBrowserCache().selectedCharacterId || "alan_soma");
   const [difficultyId, setDifficultyId] = useState("normal");
   const [player, setPlayer] = useState(null);
   const [enemy, setEnemy] = useState(null);
@@ -774,8 +975,10 @@ export default function App() {
   const [enemyFlashing, setEnemyFlashing] = useState(false);
   const [ffaSpriteStates, setFfaSpriteStates] = useState({});
   const [onlineFfaSpriteStates, setOnlineFfaSpriteStates] = useState({});
-  const [usernameInput, setUsernameInput] = useState("");
+  const [usernameInput, setUsernameInput] = useState(() => readBrowserCache().lastUsername || "");
   const [username, setUsername] = useState("");
+  const [adventureProfiles, setAdventureProfiles] = useState(() => readBrowserCache().adventureProfiles);
+  const [battleContext, setBattleContext] = useState({ type: "local", levelId: "" });
   const [activeUsers, setActiveUsers] = useState([]);
   const [availableFfaRooms, setAvailableFfaRooms] = useState([]);
   const [challengeTarget, setChallengeTarget] = useState("");
@@ -799,6 +1002,7 @@ export default function App() {
   const onlineBattleFallbackRef = useRef(null);
   const onlineTurnAnimatingRef = useRef(false);
   const pendingOnlineBattleStateRef = useRef(null);
+  const attemptedCacheLoginRef = useRef(false);
 
   const selectedCharacter = CHARACTERS[selectedId];
   const gameMode = GAME_MODES[gameModeId];
@@ -806,7 +1010,26 @@ export default function App() {
     () => CHARACTERS[selectedId === "alan_soma" ? "ramon" : "alan_soma"],
     [selectedId]
   );
-  const difficulty = DIFFICULTIES[difficultyId];
+  const adventureProfileKey = (username || usernameInput).trim();
+  const adventureProfile = useMemo(
+    () => getAdventureProfileState(adventureProfiles, adventureProfileKey),
+    [adventureProfileKey, adventureProfiles]
+  );
+  const completedAdventureLevelIds = adventureProfile.completedLevelIds;
+  const completedAdventureLevelSet = useMemo(
+    () => new Set(completedAdventureLevelIds),
+    [completedAdventureLevelIds]
+  );
+  const currentAdventureLevel = useMemo(
+    () => (battleContext.type === "adventure" ? getAdventureLevel(battleContext.levelId) : null),
+    [battleContext]
+  );
+  const currentAdventureStageStyle = useMemo(
+    () => getStageBackgroundStyle(currentAdventureLevel?.fondo),
+    [currentAdventureLevel]
+  );
+  const adventureDifficulty = currentAdventureLevel ? getAdventureDifficultyConfig(currentAdventureLevel) : null;
+  const difficulty = adventureDifficulty || DIFFICULTIES[difficultyId];
   const selectedMove = player?.ataques.find((move) => move.id === selectedMoveId) ?? null;
   const ffaCurrentPlayer = ffaPlayers[ffaCurrentPlayerIndex] ?? null;
   const ffaSelectedMove = ffaCurrentPlayer?.character.ataques.find((move) => move.id === selectedMoveId) ?? null;
@@ -814,6 +1037,11 @@ export default function App() {
   const onlineFfaSelectedMove = onlineFfaPlayer?.ataques.find((move) => move.id === selectedMoveId) ?? null;
   const isFfaBattle = screen === "battle" && gameModeId === "free_for_all" && ffaPlayers.length > 0;
   const isOnlineFfaBattle = screen === "battle" && onlineBattleMode && currentRoomMode === "free_for_all" && onlineFfaCombatants.length > 0;
+  const isAdventureBattle = battleContext.type === "adventure" && Boolean(currentAdventureLevel);
+  const isAdventureBossBattle = isAdventureBattle && currentAdventureLevel?.modo === "boss";
+  const nextAdventureLevel = ADVENTURE_LEVELS.find((level) => !completedAdventureLevelSet.has(level.id)) || null;
+  const adventureCompletionCount = completedAdventureLevelIds.length;
+  const adventureAchievementUnlocked = adventureProfile.achievementUnlocked;
   const battleInputLocked = busy;
   const localFfaArenaCombatants = isFfaBattle
     ? buildLocalFfaArenaCombatants(ffaPlayers, ffaCurrentPlayerIndex, ffaSelections, battleOver)
@@ -821,11 +1049,98 @@ export default function App() {
   const onlineFfaArenaCombatants = isOnlineFfaBattle
     ? buildOnlineFfaArenaCombatants(onlineFfaCombatants, battleOver)
     : [];
+
+  useEffect(() => {
+    writeBrowserCache({
+      lastUsername: (username || usernameInput).trim(),
+      lastHomeTab: activeHomeTab,
+      selectedCharacterId: selectedId,
+      adventureProfiles
+    });
+  }, [activeHomeTab, adventureProfiles, selectedId, username, usernameInput]);
+
+  function navigateToHomeTab(tabId) {
+    if (tabId === "jugar_local") {
+      setBattleContext({ type: "local", levelId: "" });
+      setScreen("menu");
+      return;
+    }
+
+    if (tabId === "aventura") {
+      setScreen("adventure");
+      return;
+    }
+
+    setScreen("lobby");
+  }
+
+  function registerUser(rawUsername, options = {}) {
+    const clean = rawUsername.trim();
+
+    if (!clean) {
+      if (!options.silent) {
+        setChallengeMessage("Escribi un nombre de usuario para entrar.");
+      }
+      return;
+    }
+
+    const requestedTab = options.targetTab || (activeHomeTab === "jugar_local" ? "salas" : activeHomeTab);
+
+    socket.emit("register_user", clean, (response) => {
+      if (!response?.ok) {
+        if (options.isRestoreAttempt) {
+          setUsername("");
+          setScreen("auth");
+          setChallengeMessage("No pudimos restaurar tu sesion. Reingresa con tu usuario.");
+          return;
+        }
+
+        setChallengeMessage(response?.message || "No se pudo entrar al lobby.");
+        return;
+      }
+
+      setUsernameInput(response.username);
+      setUsername(response.username);
+      setActiveHomeTab(requestedTab);
+      navigateToHomeTab(requestedTab);
+      setChallengeMessage(
+        requestedTab === "aventura"
+          ? `Sesion restaurada para la aventura como ${response.username}.`
+          : `Conectado como ${response.username}.`
+      );
+    });
+  }
+
+  useEffect(() => {
+    const cachedUsername = usernameInput.trim();
+
+    if (!cachedUsername || username || attemptedCacheLoginRef.current || activeHomeTab === "jugar_local") {
+      return;
+    }
+
+    attemptedCacheLoginRef.current = true;
+    registerUser(cachedUsername, {
+      targetTab: activeHomeTab,
+      isRestoreAttempt: true
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   function openHomeTab(tabId) {
     setActiveHomeTab(tabId);
 
     if (tabId === "jugar_local") {
       setScreen("menu");
+      return;
+    }
+
+    if (tabId === "aventura") {
+      if (!username) {
+        setScreen("auth");
+        setChallengeMessage("Entra con un usuario para guardar tu progreso de aventura.");
+        return;
+      }
+
+      setScreen("adventure");
       return;
     }
 
@@ -873,6 +1188,7 @@ export default function App() {
       onlineBattleFallbackRef.current = null;
     }
 
+    setBattleContext({ type: "online", levelId: "" });
     setCurrentRoomMode(battleState.mode || "duel");
     setCurrentRoomId(battleState.roomId || "");
     setTurn(battleState.turn || 1);
@@ -1046,6 +1362,7 @@ export default function App() {
     const nextPlayer = cloneCharacter(CHARACTERS[myCharacterId] || CHARACTERS.alan_soma);
     const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
 
+    setBattleContext({ type: "online", levelId: "" });
     setOnlineBattleMode(false);
     setOnlineFfaSpriteStates({});
     setSelectedId(myCharacterId);
@@ -1078,6 +1395,7 @@ export default function App() {
     const nextPlayer = cloneCharacter(CHARACTERS[myCharacterId] || CHARACTERS.alan_soma);
     const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
 
+    setBattleContext({ type: "online", levelId: "" });
     setOnlineBattleMode(true);
     setOnlineFfaSpriteStates({});
     setSelectedId(myCharacterId);
@@ -1128,6 +1446,7 @@ export default function App() {
         onlineBattleFallbackRef.current = null;
       }
 
+      setBattleContext({ type: "online", levelId: "" });
       setCurrentRoomId(roomId);
       setCurrentRoomMode(mode || "duel");
       setActiveHomeTab((mode || "duel") === "free_for_all" ? "salas_ffa" : "salas");
@@ -1229,6 +1548,11 @@ export default function App() {
   }, []);
 
   function handleEnterLobby() {
+    registerUser(usernameInput, {
+      targetTab: activeHomeTab === "aventura" ? "aventura" : "salas"
+    });
+    return;
+
     const clean = usernameInput.trim();
 
     if (!clean) {
@@ -1315,6 +1639,7 @@ export default function App() {
       setCurrentRoomId("");
       setCurrentRoomMode("duel");
       setCurrentRoomMaxPlayers(2);
+      setBattleContext({ type: "local", levelId: "" });
       setRoomPlayers([]);
       setRoomReady({});
       setRoomSelectedCharacters({});
@@ -1361,6 +1686,7 @@ export default function App() {
 
   function handleOpenLocalModes() {
     setActiveHomeTab("jugar_local");
+    setBattleContext({ type: "local", levelId: "" });
     setChallengeMessage("Elegí entre Duelo y Free For All.");
     setScreen("menu");
   }
@@ -1390,7 +1716,187 @@ export default function App() {
     );
   }
 
+  function finalizeAdventureBattle(won) {
+    if (!currentAdventureLevel) {
+      return;
+    }
+
+    if (!won) {
+      setChallengeMessage(`No superaste ${currentAdventureLevel.titulo}. Puedes reintentarlo.`);
+      return;
+    }
+
+    if (!adventureProfileKey) {
+      setChallengeMessage(`Superaste ${currentAdventureLevel.titulo}.`);
+      return;
+    }
+
+    const outcome = completeAdventureProgress(adventureProfiles, adventureProfileKey, currentAdventureLevel.id);
+    setAdventureProfiles(outcome.nextProfiles);
+
+    if (outcome.unlockedAchievement) {
+      setChallengeMessage(`Logro desbloqueado: ${ADVENTURE_ACHIEVEMENT.nombre}. ${ADVENTURE_ACHIEVEMENT.descripcion}`);
+      return;
+    }
+
+    if (outcome.nextLevel) {
+      setChallengeMessage(`Superaste ${currentAdventureLevel.titulo}. Se desbloqueo ${outcome.nextLevel.titulo}.`);
+      return;
+    }
+
+    setChallengeMessage(`Superaste ${currentAdventureLevel.titulo}.`);
+  }
+
+  function startAdventureDuel(level) {
+    const nextPlayer = cloneCharacter(CHARACTERS[selectedId] || CHARACTERS.alan_soma);
+    const nextEnemy = cloneCharacter(
+      buildAdventureCharacter(CHARACTERS[level.rivalId] || CHARACTERS.ramon, level.dificultadId)
+    );
+
+    setBattleContext({ type: "adventure", levelId: level.id });
+    setGameModeId("duel");
+    setDifficultyId(level.dificultadId === "facil" || level.dificultadId === "normal" ? level.dificultadId : "dificil");
+    setOnlineBattleMode(false);
+    clearQueuedMove();
+    clearTouchPreview();
+    setPlayer(nextPlayer);
+    setEnemy(nextEnemy);
+    setFfaPlayers([]);
+    setFfaSelections({});
+    setOnlineFfaCombatants([]);
+    setOnlineFfaSpriteStates({});
+    setTurn(1);
+    setBusy(false);
+    setBattleOver(false);
+    setSelectedMoveId(null);
+    setMobileLogOpen(false);
+    setPreviewMoveId(null);
+    setPlayerPose("normal");
+    setEnemyPose("normal");
+    setPlayerActing(false);
+    setEnemyActing(false);
+    setPlayerFlashing(false);
+    setEnemyFlashing(false);
+    setLogs([
+      `Aventura ${level.orden}/10 · ${level.titulo}`,
+      level.historia,
+      `${nextPlayer.nombre} contra ${nextEnemy.nombre} (${level.dificultadId}).`
+    ]);
+    setScreen("battle");
+  }
+
+  function startAdventureBossBattle(level) {
+    const bossOrder = ["ramon", "alan_soma", "sonoda"];
+    const boostedPlayer = cloneCharacter(CHARACTERS[selectedId] || CHARACTERS.alan_soma);
+    boostedPlayer.hp *= 2;
+    boostedPlayer.hpActual = boostedPlayer.hp;
+
+    const nextFighters = [
+      {
+        slotId: 0,
+        label: username || "Vos",
+        characterId: selectedId,
+        character: boostedPlayer,
+        isPlayer: true,
+        isAi: false
+      },
+      ...bossOrder.map((characterId, index) => ({
+        slotId: index + 1,
+        label: CHARACTERS[characterId]?.nombre || characterId,
+        characterId,
+        character: cloneCharacter(
+          buildAdventureCharacter(CHARACTERS[characterId] || CHARACTERS.ramon, level.dificultadId)
+        ),
+        isPlayer: false,
+        isAi: true
+      }))
+    ];
+
+    setBattleContext({ type: "adventure", levelId: level.id });
+    setGameModeId("free_for_all");
+    setDifficultyId("dificil");
+    clearQueuedMove();
+    clearTouchPreview();
+    setOnlineBattleMode(false);
+    setPlayer(null);
+    setEnemy(null);
+    setFfaPlayers(nextFighters);
+    resetLocalFfaSpriteStates(nextFighters);
+    setOnlineFfaCombatants([]);
+    setOnlineFfaSpriteStates({});
+    setFfaSelections({});
+    setFfaCurrentPlayerIndex(0);
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
+    setMobileLogOpen(false);
+    setBattleOver(false);
+    setBusy(false);
+    setTurn(1);
+    setLogs([
+      `Aventura ${level.orden}/10 · ${level.titulo}`,
+      level.historia,
+      `${boostedPlayer.nombre} entra al boss final con la vida duplicada: ${boostedPlayer.hp} HP.`,
+      "En el cierre de la EPET 34, Ramon, Alan y Sonoda atacan juntos."
+    ]);
+    setScreen("battle");
+  }
+
+  function startAdventureLevel(levelId) {
+    const level = getAdventureLevel(levelId);
+
+    if (!level) {
+      return;
+    }
+
+    if (!isAdventureLevelUnlocked(level, completedAdventureLevelSet)) {
+      setChallengeMessage("Ese nivel todavia esta bloqueado. Completa el anterior primero.");
+      return;
+    }
+
+    setActiveHomeTab("aventura");
+
+    if (level.modo === "boss") {
+      startAdventureBossBattle(level);
+      return;
+    }
+
+    startAdventureDuel(level);
+  }
+
+  function buildAdventureBossSelections(baseSelections) {
+    const nextSelections = { ...baseSelections };
+    const playerTargetIndex = ffaPlayers.findIndex((fighter) => fighter.isPlayer && fighter.character.hpActual > 0);
+
+    ffaPlayers.forEach((fighter, index) => {
+      if (!fighter?.isAi || fighter.character.hpActual <= 0 || nextSelections[index]) {
+        return;
+      }
+
+      const aiMove = pickAiMove(fighter.character);
+      const aliveTargets = ffaPlayers
+        .map((candidate, targetIndex) => ({ candidate, targetIndex }))
+        .filter(({ candidate, targetIndex }) => targetIndex !== index && candidate.character.hpActual > 0);
+      let targetIndex = null;
+
+      if (aiMove.tipo === "ataque") {
+        if (playerTargetIndex >= 0 && playerTargetIndex !== index) {
+          targetIndex = playerTargetIndex;
+        } else {
+          targetIndex = aliveTargets[0]?.targetIndex ?? null;
+        }
+      }
+
+      nextSelections[index] = {
+        moveId: aiMove.id,
+        targetIndex
+      };
+    });
+
+    return nextSelections;
+  }
+
   function startBattle() {
+    setBattleContext({ type: "local", levelId: "" });
     setOnlineBattleMode(false);
     clearQueuedMove();
     setPlayer(cloneCharacter(selectedCharacter));
@@ -1425,6 +1931,7 @@ export default function App() {
   function startFreeForAllBattle() {
     const nextFighters = ffaSlots.map((slot) => cloneFfaFighter(slot));
 
+    setBattleContext({ type: "local", levelId: "" });
     clearQueuedMove();
     clearTouchPreview();
     setOnlineBattleMode(false);
@@ -1623,6 +2130,37 @@ export default function App() {
 
     const finalFighters = resetFfaRoundState(fighters);
     const survivors = getAliveFfaIndexes(finalFighters);
+    const playerBossIndex = finalFighters.findIndex((fighter) => fighter.isPlayer);
+    const playerBossAlive = playerBossIndex >= 0 && finalFighters[playerBossIndex].character.hpActual > 0;
+    const bossOpponentsAlive = finalFighters.filter((fighter) => fighter.isAi && fighter.character.hpActual > 0).length;
+
+    if (isAdventureBossBattle && !playerBossAlive) {
+      setBattleOver(true);
+      setFfaPlayers(finalFighters);
+      resetLocalFfaSpriteStates(finalFighters);
+      setFfaSelections({});
+      setFfaCurrentPlayerIndex(playerBossIndex >= 0 ? playerBossIndex : 0);
+      setSelectedMoveId(null);
+      setPreviewMoveId(null);
+      setBusy(false);
+      setLogs((prev) => ["Los guardianes de la 34 te frenaron antes del logro final.", ...prev].slice(0, 24));
+      finalizeAdventureBattle(false);
+      return;
+    }
+
+    if (isAdventureBossBattle && playerBossAlive && bossOpponentsAlive === 0) {
+      setBattleOver(true);
+      setFfaPlayers(finalFighters);
+      resetLocalFfaSpriteStates(finalFighters);
+      setFfaSelections({});
+      setFfaCurrentPlayerIndex(playerBossIndex);
+      setSelectedMoveId(null);
+      setPreviewMoveId(null);
+      setBusy(false);
+      setLogs((prev) => [`${finalFighters[playerBossIndex].label} resistio y supero a los tres guardianes.`, ...prev].slice(0, 24));
+      finalizeAdventureBattle(true);
+      return;
+    }
 
     if (survivors.length === 1) {
       setBattleOver(true);
@@ -1653,6 +2191,17 @@ export default function App() {
         targetIndex
       }
     };
+
+    if (isAdventureBossBattle) {
+      const resolvedSelections = buildAdventureBossSelections(nextSelections);
+
+      setFfaSelections(resolvedSelections);
+      setSelectedMoveId(null);
+      setPreviewMoveId(null);
+      setBusy(true);
+      resolveFreeForAllRound(resolvedSelections);
+      return;
+    }
 
     const nextPlayerIndex = getNextPendingFfaPlayerIndex(ffaPlayers, nextSelections, ffaCurrentPlayerIndex);
 
@@ -1901,10 +2450,41 @@ export default function App() {
             : "Perdiste la partida.",
         ...prev
       ].slice(0, 14));
+
+      if (isAdventureBattle) {
+        finalizeAdventureBattle(e.hpActual <= 0 && p.hpActual > 0);
+      }
     }
 
     setTurn((t) => t + 1);
     setBusy(false);
+  }
+
+  function handleBattleBack() {
+    if (isAdventureBattle) {
+      setScreen("adventure");
+      setBusy(false);
+      setSelectedMoveId(null);
+      setPreviewMoveId(null);
+      setMobileLogOpen(false);
+      return;
+    }
+
+    setScreen("menu");
+  }
+
+  function handleReplayBattle() {
+    if (currentAdventureLevel) {
+      startAdventureLevel(currentAdventureLevel.id);
+      return;
+    }
+
+    if (gameModeId === "free_for_all") {
+      startFreeForAllBattle();
+      return;
+    }
+
+    startBattle();
   }
 
   return (
@@ -1921,6 +2501,7 @@ export default function App() {
               <nav className="flex flex-wrap items-center justify-center gap-6 pt-1 text-sm font-semibold uppercase tracking-[0.18em] text-zinc-500 lg:justify-center">
                 {[
                   { id: "jugar_local", label: "Jugar local" },
+                  { id: "aventura", label: "Aventura" },
                   { id: "salas", label: "Salas" },
                   { id: "salas_ffa", label: "Salas FFA" }
                 ].map((tab) => {
@@ -2259,6 +2840,180 @@ export default function App() {
           </div>
         )}
 
+        {screen === "adventure" && (
+          <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
+            <section className="space-y-5">
+              <div className="overflow-hidden rounded-[34px] border border-slate-900/12 bg-[linear-gradient(135deg,rgba(15,23,42,0.98)_0%,rgba(127,29,29,0.96)_55%,rgba(245,158,11,0.9)_100%)] p-6 text-white shadow-[0_26px_80px_rgba(15,23,42,0.28)]">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+                  <div className="max-w-2xl">
+                    <div className="text-[11px] font-black uppercase tracking-[0.3em] text-amber-200">Aventura EPET 34</div>
+                    <h2 className="mt-2 text-3xl font-black tracking-[-0.04em] md:text-4xl">Sobrevivi al folklore de Itaembe Guazu</h2>
+                    <p className="mt-3 max-w-xl text-sm text-white/80 md:text-base">
+                      Cada nivel mezcla fotos reales de la EPET 34 con Ramon, Alan y Agua convirtiendo cualquier recreo, proyecto o mala indicacion en algo personal.
+                    </p>
+                  </div>
+
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <div className="rounded-[24px] border border-white/20 bg-white/10 px-4 py-4 backdrop-blur">
+                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-white/60">Usuario</div>
+                      <div className="mt-2 text-xl font-black">{username}</div>
+                    </div>
+                    <div className="rounded-[24px] border border-white/20 bg-white/10 px-4 py-4 backdrop-blur">
+                      <div className="text-[10px] font-black uppercase tracking-[0.22em] text-white/60">Progreso</div>
+                      <div className="mt-2 text-xl font-black">{adventureCompletionCount}/{ADVENTURE_LEVELS.length}</div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="mt-5 rounded-[24px] border border-white/10 bg-black/20 p-4 text-sm text-white/80">
+                  <div className="font-black uppercase tracking-[0.18em] text-amber-200">Historia</div>
+                  <div className="mt-2">
+                    La escuela tecnica EPET 34 nacio en Itaembe Guazu para acompanar el crecimiento del barrio. En esta campana, cada duelo te mete mas adentro de su identidad hasta llegar al combate final por el orgullo de la 34.
+                  </div>
+                </div>
+              </div>
+
+              <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
+                <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Tu protagonista</div>
+                    <h3 className="mt-1 text-2xl font-black tracking-[-0.03em] text-slate-900">Elegi con quien vas a pasar la aventura</h3>
+                  </div>
+                  <div className="rounded-2xl border border-sky-200 bg-sky-50 px-4 py-2 text-sm font-semibold text-sky-900">
+                    Actual: <span className="font-black">{selectedCharacter.nombre}</span>
+                  </div>
+                </div>
+
+                <div className="grid gap-4 md:grid-cols-3">
+                  {Object.values(CHARACTERS).map((char) => {
+                    const selected = char.id === selectedId;
+
+                    return (
+                      <button
+                        key={`adventure-character-${char.id}`}
+                        onClick={() => setSelectedId(char.id)}
+                        className={`rounded-[26px] border p-4 text-left transition ${selected ? "border-sky-500 bg-[linear-gradient(180deg,#f2faff_0%,#dbefff_100%)] shadow-[0_18px_40px_rgba(14,165,233,0.18)]" : "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] hover:border-slate-300 hover:bg-white"}`}
+                      >
+                        <div className="mb-2 flex items-center justify-between gap-3">
+                          <div className="text-lg font-black tracking-[-0.03em] text-slate-900">{char.nombre}</div>
+                          <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase tracking-[0.18em] ${selected ? "bg-sky-600 text-white" : "border border-slate-300 bg-white text-slate-500"}`}>
+                            {selected ? "Activo" : "Elegir"}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 gap-2 text-sm text-slate-700">
+                          <div>HP: <span className="font-black">{char.hp}</span></div>
+                          <div>Ataque: <span className="font-black">{char.ataque}</span></div>
+                          <div>Defensa: <span className="font-black">{char.defensa}</span></div>
+                          <div>Velocidad: <span className="font-black">{char.velocidad}</span></div>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </section>
+
+              <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(235,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
+                <div className="mb-5 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+                  <div>
+                    <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Mapa de niveles</div>
+                    <h3 className="mt-1 text-2xl font-black tracking-[-0.03em] text-slate-900">Del primer timbre al combate final</h3>
+                  </div>
+                  {nextAdventureLevel && (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                      Siguiente recomendado: <span className="font-black">{nextAdventureLevel.titulo}</span>
+                    </div>
+                  )}
+                </div>
+
+                <div className="grid gap-4 xl:grid-cols-2">
+                  {ADVENTURE_LEVELS.map((level) => {
+                    const completed = completedAdventureLevelSet.has(level.id);
+                    const unlocked = isAdventureLevelUnlocked(level, completedAdventureLevelSet);
+                    const isNext = nextAdventureLevel?.id === level.id;
+
+                    return (
+                      <article
+                        key={level.id}
+                        className={`rounded-[28px] border p-5 shadow-sm transition ${completed ? "border-emerald-200 bg-[linear-gradient(180deg,#f0fdf4_0%,#dcfce7_100%)]" : unlocked ? "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)]" : "border-slate-200 bg-slate-100/90"}`}
+                      >
+                        <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                          <div>
+                            <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Nivel {level.orden}</div>
+                            <h4 className="mt-1 text-xl font-black tracking-[-0.03em] text-slate-900">{level.titulo}</h4>
+                            <div className="mt-1 text-sm font-semibold text-slate-500">{level.subtitulo}</div>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            {completed && (
+                              <span className="rounded-full bg-emerald-600 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white">Completado</span>
+                            )}
+                            {!completed && isNext && (
+                              <span className="rounded-full bg-amber-500 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white">Siguiente</span>
+                            )}
+                            {!unlocked && (
+                              <span className="rounded-full border border-slate-300 bg-white px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-slate-500">Bloqueado</span>
+                            )}
+                          </div>
+                        </div>
+
+                        <p className="mt-4 text-sm text-slate-700">{level.resumen}</p>
+                        <div className="mt-4 rounded-[22px] border border-slate-200 bg-white/75 p-4 text-sm text-slate-700">
+                          {level.historia}
+                        </div>
+
+                        <div className="mt-4 flex items-center justify-between gap-3">
+                          <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+                            {level.modo === "boss" ? "Boss final" : `${CHARACTERS[level.rivalId]?.nombre || level.rivalId} · ${level.dificultadId}`}
+                          </div>
+                          <button
+                            disabled={!unlocked}
+                            onClick={() => startAdventureLevel(level.id)}
+                            className={`rounded-[18px] px-4 py-3 text-sm font-black uppercase tracking-[0.16em] transition ${unlocked ? "bg-slate-900 text-white hover:bg-slate-800" : "cursor-not-allowed border border-slate-300 bg-white text-slate-400"}`}
+                          >
+                            {completed ? "Rejugar" : unlocked ? "Jugar" : "Bloqueado"}
+                          </button>
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              </section>
+            </section>
+
+            <aside className="space-y-5">
+              <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+                <div className="text-[11px] font-black uppercase tracking-[0.26em] text-slate-500">Premio final</div>
+                <h3 className="mt-2 text-2xl font-black tracking-[-0.03em] text-slate-900">{ADVENTURE_ACHIEVEMENT.nombre}</h3>
+                <p className="mt-3 text-sm text-slate-600">{ADVENTURE_ACHIEVEMENT.descripcion}</p>
+
+                <div className={`mt-4 rounded-[24px] border px-4 py-4 text-sm ${adventureAchievementUnlocked ? "border-emerald-300 bg-emerald-50 text-emerald-900" : "border-slate-200 bg-white/80 text-slate-600"}`}>
+                  {adventureAchievementUnlocked
+                    ? "Logro desbloqueado. Ya sos parte de la historia de la 34."
+                    : "Completa los 10 niveles para desbloquear este logro en el navegador."}
+                </div>
+              </section>
+
+              <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+                <div className="text-[11px] font-black uppercase tracking-[0.26em] text-slate-500">Checkpoint</div>
+                <div className="mt-2 text-lg font-black tracking-[-0.03em] text-slate-900">
+                  {nextAdventureLevel ? nextAdventureLevel.titulo : "Aventura completada"}
+                </div>
+                <div className="mt-3 text-sm text-slate-600">
+                  {nextAdventureLevel
+                    ? nextAdventureLevel.historia
+                    : "La EPET 34 ya te reconoce como alguien que supero la puerta, los talleres y a sus tres guardianes."}
+                </div>
+              </section>
+
+              <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
+                <div className="text-[11px] font-black uppercase tracking-[0.26em] text-slate-500">Estado</div>
+                <div className="mt-3 text-sm font-medium text-slate-700">
+                  {challengeMessage || "Tu progreso de aventura se guarda automaticamente."}
+                </div>
+              </section>
+            </aside>
+          </div>
+        )}
+
         {screen === "menu" && (
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
             <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
@@ -2552,12 +3307,12 @@ export default function App() {
             <section className="overflow-hidden rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e2e9f1_100%)] p-3 shadow-[0_22px_60px_rgba(15,23,42,0.18)] md:p-5">
               <div className="mb-3 flex flex-row items-center justify-between gap-2 rounded-[24px] border border-slate-900/10 bg-white/80 px-3 py-2 shadow-sm md:mb-4 md:px-5 md:py-3">
                 <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Free For All</div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">{isAdventureBossBattle ? "Aventura Boss" : "Free For All"}</div>
                   <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900 md:text-2xl">Turno {turn}</h2>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setScreen("menu")}
+                    onClick={handleBattleBack}
                     className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white md:px-4 md:text-sm md:normal-case md:tracking-normal"
                   >
                     Volver
@@ -2575,8 +3330,9 @@ export default function App() {
                 combatants={localFfaArenaCombatants}
                 spriteStates={ffaSpriteStates}
                 turn={turn}
-                arenaLabel="Free For All"
-                turnNote={battleOver ? "Resultado final" : `${ffaCurrentPlayer.label} decide`}
+                arenaLabel={isAdventureBossBattle ? "Guardianes de la 34" : "Free For All"}
+                turnNote={battleOver ? "Resultado final" : isAdventureBossBattle ? "Vos eliges y los tres responden" : `${ffaCurrentPlayer.label} decide`}
+                stageBackground={isAdventureBossBattle ? currentAdventureLevel?.fondo : null}
               />
 
               <div className="rounded-[28px] border border-slate-900/10 bg-white/80 p-3 shadow-sm md:p-4">
@@ -2627,7 +3383,7 @@ export default function App() {
                         <div className="mt-3 grid gap-2 sm:grid-cols-2">
                           {ffaPlayers
                             .map((fighter, index) => ({ fighter, index }))
-                            .filter(({ fighter, index }) => index !== ffaCurrentPlayerIndex && fighter.character.hpActual > 0)
+                            .filter(({ fighter, index }) => index !== ffaCurrentPlayerIndex && fighter.character.hpActual > 0 && (!isAdventureBossBattle || fighter.isAi))
                             .map(({ fighter, index }) => (
                               <button
                                 key={`target-${fighter.slotId}`}
@@ -2649,10 +3405,10 @@ export default function App() {
                     <div className="text-[11px] font-black uppercase tracking-[0.3em] text-amber-700">Resultado</div>
                     <div className="mt-1 text-xl font-black md:text-2xl">{logs[0]}</div>
                     <button
-                      onClick={startFreeForAllBattle}
+                      onClick={handleReplayBattle}
                       className="mt-3 rounded-2xl bg-slate-900 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-slate-800 md:px-5 md:py-3 md:text-sm md:tracking-[0.18em]"
                     >
-                      Jugar otra vez
+                      {isAdventureBossBattle ? "Reintentar nivel" : "Jugar otra vez"}
                     </button>
                   </div>
                 )}
@@ -2688,12 +3444,12 @@ export default function App() {
             <section className="overflow-hidden rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e2e9f1_100%)] p-2 shadow-[0_22px_60px_rgba(15,23,42,0.18)] md:p-5">
               <div className="mb-2 flex flex-row items-center justify-between gap-2 rounded-[24px] border border-slate-900/10 bg-white/80 px-3 py-2 shadow-sm md:mb-4 md:flex-row md:items-center md:justify-between md:px-5 md:py-3">
                 <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Showdown34 Battle</div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">{isAdventureBattle ? "Aventura EPET 34" : "Showdown34 Battle"}</div>
                   <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900 md:text-2xl">Turno {turn}</h2>
                 </div>
                 <div className="flex items-center gap-2">
                   <button
-                    onClick={() => setScreen("menu")}
+                    onClick={handleBattleBack}
                     className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white md:px-4 md:text-sm md:normal-case md:tracking-normal"
                   >
                     Volver
@@ -2709,8 +3465,8 @@ export default function App() {
 
               <div className="mb-3 overflow-hidden rounded-[28px] border border-slate-700/40 bg-[linear-gradient(180deg,#dfe7ef_0%,#bfd2e0_18%,#a8c1d4_48%,#8facbf_100%)] p-1.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.6)] md:mb-5 md:p-4">
                 <div
-                  className="relative h-[290px] w-full overflow-hidden rounded-[22px] border border-slate-800/30 bg-slate-900 bg-cover bg-center bg-no-repeat md:h-[430px]"
-                  style={{ backgroundImage: `url(${battleBackground})` }}
+                  className="battle-stage-surface relative h-[290px] w-full overflow-hidden rounded-[22px] border border-slate-800/30 bg-cover bg-center bg-no-repeat md:h-[430px]"
+                  style={currentAdventureStageStyle}
                 >
                   <div className="battle-stage-overlay absolute inset-0 bg-[linear-gradient(180deg,rgba(255,255,255,0.12)_0%,rgba(15,23,42,0.06)_28%,rgba(15,23,42,0.18)_100%)]" />
                   <div className="battle-stage-floor absolute inset-x-0 bottom-0 h-24 bg-[linear-gradient(180deg,transparent_0%,rgba(15,23,42,0.22)_100%)]" />
@@ -2875,10 +3631,10 @@ export default function App() {
                     {player.hpActual > 0 && enemy.hpActual <= 0 ? "Victoria" : player.hpActual <= 0 && enemy.hpActual > 0 ? "Derrota" : "Empate"}
                   </div>
                   <button
-                    onClick={startBattle}
+                    onClick={handleReplayBattle}
                     className="mt-3 rounded-2xl bg-slate-900 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-slate-800 md:px-5 md:py-3 md:text-sm md:tracking-[0.18em]"
                   >
-                    Jugar otra vez
+                    {isAdventureBattle ? "Reintentar nivel" : "Jugar otra vez"}
                   </button>
                 </div>
               )}
