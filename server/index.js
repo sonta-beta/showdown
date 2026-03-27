@@ -1,7 +1,17 @@
-const express = require("express");
-const http = require("http");
-const cors = require("cors");
-const { Server } = require("socket.io");
+﻿import express from "express";
+import http from "http";
+import cors from "cors";
+import { Server } from "socket.io";
+import { CHARACTERS as CHARACTERS_SHARED } from "../src/lib/gameData.js";
+import {
+  chooseFirstAttacker as chooseFirstAttackerShared,
+  cloneCharacter as cloneCharacterShared,
+  findCombatantIndex as findCombatantIndexShared,
+  getAliveCombatants as getAliveCombatantsShared,
+  resetCombatantsRound as resetCombatantsRoundShared,
+  resetTurnFlags as resetTurnFlagsShared,
+  resolveMove as resolveMoveShared
+} from "../src/lib/gameEngine.js";
 
 const app = express();
 
@@ -28,87 +38,15 @@ const socketToUser = new Map();
 const challenges = new Map();
 const rooms = new Map();
 
-const CHARACTERS = {
-  alan_soma: {
-    id: "alan_soma",
-    nombre: "Alan Soma",
-    hp: 600,
-    ataque: 9,
-    defensa: 20,
-    velocidad: 6,
-    ataques: [
-      { id: "aguante", nombre: "Aguante", tipo: "defensivo", efectividad: 80, prioridad: 1, limiteUso: 15 },
-      { id: "tragar", nombre: "Tragar", tipo: "ataque", poder: 1000, limiteUso: 3 },
-      { id: "golpe_de_gordo", nombre: "Golpe de gordo", tipo: "ataque", poder: 50, efectividad: 100, limiteUso: 20 },
-    ],
-  },
-  ramon: {
-    id: "ramon",
-    nombre: "Ramón",
-    hp: 400,
-    ataque: 12,
-    defensa: 8,
-    velocidad: 15,
-    ataques: [
-      { id: "infiel", nombre: "Infiel", tipo: "ataque", poder: 200, efectividad: 80, limiteUso: 10 },
-      { id: "correr", nombre: "Correr", tipo: "defensivo", poder: 50, efectividad: 80, limiteUso: 15 },
-      { id: "golpe_inutil", nombre: "Golpe inútil", tipo: "ataque", poder: 40, efectividad: 100, limiteUso: 25 },
-    ],
-  },
-  sonoda: {
-    id: "sonoda",
-    nombre: "Sonoda",
-    hp: 350,
-    ataque: 15,
-    defensa: 10,
-    velocidad: 10,
-    ataques: [
-      { id: "lolero", nombre: "Lolero", tipo: "defensivo", efectividad: 80, limiteUso: 10 },
-      { id: "kung_fu", nombre: "Kung Fu", tipo: "ataque", poder: 100, efectividad: 90, limiteUso: 15 },
-      { id: "borracho", nombre: "Borracho", tipo: "ataque", efectividad: 100, limiteUso: 12 },
-    ],
-  },
+const ROOM_MODES = {
+  duel: "duel",
+  free_for_all: "free_for_all",
 };
 
+const CHARACTERS = CHARACTERS_SHARED;
+
 function cloneCharacter(base) {
-  return {
-    ...base,
-    hpActual: base.hp,
-    ataqueBoost: 1,
-    defensaBoost: 1,
-    protegerTurno: false,
-    esquivaAtaqueTurno: false,
-    usos: Object.fromEntries(base.ataques.map((a) => [a.id, a.limiteUso])),
-  };
-}
-
-function randomInt(min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
-}
-
-function roll(percent) {
-  return Math.random() * 100 < percent;
-}
-
-function rollTragarOutcome() {
-  const rollValue = Math.random() * 100;
-
-  if (rollValue < 5) return { hit: true, poder: 1000 };
-  if (rollValue < 60) return { hit: true, poder: 200 };
-  return { hit: false, poder: 0 };
-}
-
-function getDamage(attacker, defender, move) {
-  const raw =
-    ((22 * move.poder * (attacker.ataque * attacker.ataqueBoost)) /
-      Math.max(1, defender.defensa * defender.defensaBoost)) /
-      50 +
-    2;
-
-  const variance = randomInt(85, 100) / 100;
-  const baseDamage = raw * variance;
-  const boostedDamage = baseDamage * 1.5;
-  return Math.max(1, Math.floor(boostedDamage));
+  return cloneCharacterShared(base);
 }
 
 function emitActiveUsers() {
@@ -117,6 +55,35 @@ function emitActiveUsers() {
     status: data.status,
   }));
   io.emit("active_users", list);
+}
+
+function emitFfaRooms() {
+  const list = Array.from(rooms.values())
+    .filter((room) => room.mode === ROOM_MODES.free_for_all && room.isPublic && !room.battle && room.players.length < room.maxPlayers)
+    .map((room) => ({
+      roomId: room.roomId,
+      players: room.players,
+      count: room.players.length,
+      maxPlayers: room.maxPlayers,
+    }));
+
+  io.emit("ffa_rooms", list);
+}
+
+function createRoom(roomId, mode, players, options = {}) {
+  const room = {
+    roomId,
+    mode,
+    isPublic: Boolean(options.isPublic),
+    maxPlayers: mode === ROOM_MODES.free_for_all ? 4 : 2,
+    players: [...players],
+    ready: Object.fromEntries(players.map((username) => [username, false])),
+    selectedCharacters: Object.fromEntries(players.map((username) => [username, null])),
+    battle: null,
+  };
+
+  rooms.set(roomId, room);
+  return room;
 }
 
 function getRoomByUsername(username) {
@@ -144,19 +111,55 @@ function emitRoomState(roomId) {
 
   emitToRoomPlayers(room, "room_state", {
     roomId,
+    mode: room.mode || ROOM_MODES.duel,
+    maxPlayers: room.maxPlayers || 2,
     players: room.players,
     ready: room.ready,
     selectedCharacters: room.selectedCharacters,
   });
 }
 
+function serializeCombatant(combatant, viewerUsername, pendingMoves) {
+  return {
+    username: combatant.username,
+    characterId: combatant.character.id,
+    nombre: combatant.character.nombre,
+    hp: combatant.character.hp,
+    hpActual: combatant.character.hpActual,
+    ataques: combatant.character.ataques,
+    usos: combatant.character.usos,
+    protegerTurno: combatant.character.protegerTurno,
+    esquivaAtaqueTurno: combatant.character.esquivaAtaqueTurno,
+    isMe: combatant.username === viewerUsername,
+    pending: Boolean(pendingMoves[combatant.username]),
+  };
+}
+
 function buildBattlePublicState(room, viewerUsername) {
+  if (room.mode === ROOM_MODES.free_for_all) {
+    return {
+      roomId: room.roomId,
+      mode: room.mode,
+      turn: room.battle.turn,
+      log: room.battle.log,
+      winner: room.battle.winner,
+      combatants: room.battle.combatants.map((combatant) =>
+        serializeCombatant(combatant, viewerUsername, room.battle.pendingMoves)
+      ),
+      pendingMoves: Object.fromEntries(
+        room.players.map((username) => [username, Boolean(room.battle.pendingMoves[username])])
+      ),
+      viewerUsername,
+    };
+  }
+
   const isPlayer1 = room.battle.player1.username === viewerUsername;
   const me = isPlayer1 ? room.battle.player1 : room.battle.player2;
   const enemy = isPlayer1 ? room.battle.player2 : room.battle.player1;
 
   return {
     roomId: room.roomId,
+    mode: room.mode || ROOM_MODES.duel,
     me: {
       username: me.username,
       characterId: me.character.id,
@@ -201,251 +204,30 @@ function emitBattleState(roomId) {
 }
 
 function applyMove(attacker, defender, move, attackerOwnerLabel, defenderPlannedMove) {
-  const nextAttacker = {
-    ...attacker,
-    usos: { ...attacker.usos },
-  };
-  const nextDefender = {
-    ...defender,
-    usos: { ...defender.usos },
-  };
-
-  if (nextAttacker.usos[move.id] <= 0) {
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text: `${attackerOwnerLabel} no tiene más usos para ${move.nombre}.`,
-    };
-  }
-
-  nextAttacker.usos[move.id] -= 1;
-
-  if (move.id === "aguante") {
-    if (!roll(move.efectividad)) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} intentó Aguante, pero falló.`,
-      };
-    }
-
-    nextAttacker.protegerTurno = true;
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text: `${attackerOwnerLabel} usó Aguante y reducirá el daño recibido este turno.`,
-    };
-  }
-
-  if (move.id === "tragar") {
-    const outcome = rollTragarOutcome();
-
-    if (!outcome.hit) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usó Tragar, pero falló.`,
-      };
-    }
-
-    if (nextDefender.esquivaAtaqueTurno && outcome.poder === 1000) {
-      const reducedMove = { ...move, poder: 200, efectividad: 100 };
-      const dmg = getDamage(nextAttacker, nextDefender, reducedMove);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usó Tragar, pero el rival evitó el ataque letal. Causó ${dmg} de daño.`,
-      };
-    }
-
-    const resolvedMove = { ...move, poder: outcome.poder, efectividad: 100 };
-    const dmg = getDamage(nextAttacker, nextDefender, resolvedMove);
-    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text:
-        outcome.poder === 1000
-          ? `${attackerOwnerLabel} usó Tragar con potencia máxima y causó ${dmg} de daño.`
-          : `${attackerOwnerLabel} usó Tragar con poder ${outcome.poder} y causó ${dmg} de daño.`,
-    };
-  }
-
-  if (move.id === "lolero") {
-    if (!roll(move.efectividad)) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} intentÃ³ Lolero, pero fallÃ³.`,
-      };
-    }
-
-    if (roll(5)) {
-      nextAttacker.hpActual = 0;
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usÃ³ Lolero, engordÃ³ demasiado y muriÃ³.`,
-      };
-    }
-
-    const heal = Math.floor(nextAttacker.hp * 0.25);
-    nextAttacker.hpActual = Math.min(nextAttacker.hp, nextAttacker.hpActual + heal);
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text: `${attackerOwnerLabel} usÃ³ Lolero y recuperÃ³ ${heal} de vida.`,
-    };
-  }
-
-  if (move.id === "kung_fu") {
-    const accuracy = move.efectividad ?? 100;
-    if (!roll(accuracy)) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usÃ³ Kung Fu, pero fallÃ³.`,
-      };
-    }
-
-    const poweredMove = roll(10) ? { ...move, poder: move.poder * 2 } : move;
-    const dmg = getDamage(nextAttacker, nextDefender, poweredMove);
-    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text:
-        poweredMove.poder > move.poder
-          ? `${attackerOwnerLabel} usÃ³ Kung Fu y duplicÃ³ su poder, causando ${dmg} de daÃ±o.`
-          : `${attackerOwnerLabel} usÃ³ Kung Fu e hizo ${dmg} de daÃ±o.`,
-    };
-  }
-
-  if (move.id === "borracho") {
-    const rollValue = Math.random() * 100;
-
-    if (rollValue < 50) {
-      const borrachoMove = { ...move, poder: 50 };
-      const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usÃ³ Borracho e hizo ${dmg} de daÃ±o.`,
-      };
-    }
-
-    if (rollValue < 70) {
-      const borrachoMove = { ...move, poder: 100 };
-      const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usÃ³ Borracho con fuerza y causÃ³ ${dmg} de daÃ±o.`,
-      };
-    }
-
-    if (rollValue < 99) {
-      const selfMove = { ...move, poder: 30 };
-      const selfDmg = getDamage(nextAttacker, nextAttacker, selfMove);
-      nextAttacker.hpActual = Math.max(0, nextAttacker.hpActual - selfDmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usÃ³ Borracho y se daÃ±Ã³ a sÃ­ mismo por ${selfDmg}.`,
-      };
-    }
-
-    const borrachoMove = { ...move, poder: 1000 };
-    const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
-    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text: `${attackerOwnerLabel} usÃ³ Borracho y desatÃ³ un golpe devastador de ${dmg} de daÃ±o.`,
-    };
-  }
-
-  if (move.id === "correr") {
-    if (!defenderPlannedMove || defenderPlannedMove.tipo !== "ataque") {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} intentó Correr, pero el rival no atacó.`,
-      };
-    }
-
-    if (!roll(move.efectividad)) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} intentó Correr, pero no pudo esquivar.`,
-      };
-    }
-
-    nextAttacker.esquivaAtaqueTurno = true;
-    const dmg = getDamage(nextAttacker, nextDefender, move);
-    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text: `${attackerOwnerLabel} esquivó completamente el ataque y contraatacó con Correr por ${dmg} de daño.`,
-    };
-  }
-
-  if (move.tipo === "ataque") {
-    const accuracy = move.efectividad ?? 100;
-
-    if (!roll(accuracy)) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${attackerOwnerLabel} usó ${move.nombre}, pero falló.`,
-      };
-    }
-
-    let dmg = getDamage(nextAttacker, nextDefender, move);
-
-    if (nextDefender.esquivaAtaqueTurno) {
-      dmg = 0;
-    } else if (nextDefender.protegerTurno) {
-      dmg = Math.floor(dmg * 0.3);
-    }
-
-    nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text:
-        dmg === 0
-          ? `${attackerOwnerLabel} usó ${move.nombre}, pero el rival lo esquivó.`
-          : `${attackerOwnerLabel} usó ${move.nombre} e hizo ${dmg} de daño.`,
-    };
-  }
-
-  return {
-    attacker: nextAttacker,
-    defender: nextDefender,
-    text: `${attackerOwnerLabel} no hizo nada.`,
-  };
+  return resolveMoveShared({
+    attacker,
+    defender,
+    move,
+    attackerLabel: attackerOwnerLabel,
+    defenderLabel: defender.nombre,
+    defenderPlannedMove,
+  });
 }
 
 function endTurnUpdate(p1, p2) {
-  const a = { ...p1 };
-  const b = { ...p2 };
+  return { a: resetTurnFlagsShared(p1), b: resetTurnFlagsShared(p2) };
+}
 
-  a.protegerTurno = false;
-  b.protegerTurno = false;
-  a.esquivaAtaqueTurno = false;
-  b.esquivaAtaqueTurno = false;
+function getAliveCombatants(combatants) {
+  return getAliveCombatantsShared(combatants);
+}
 
-  return { a, b };
+function findCombatantIndex(combatants, username) {
+  return findCombatantIndexShared(combatants, username);
+}
+
+function resetCombatantsRound(combatants) {
+  return resetCombatantsRoundShared(combatants);
 }
 
 function resolveRoomTurn(roomId) {
@@ -470,11 +252,7 @@ function resolveRoomTurn(roomId) {
   if (!move1 || !move2) return;
 
   const firstIsP1 =
-    (move1.prioridad || 0) > (move2.prioridad || 0)
-      ? true
-      : (move1.prioridad || 0) < (move2.prioridad || 0)
-      ? false
-      : p1.character.velocidad >= p2.character.velocidad;
+    chooseFirstAttackerShared(move1, move2, p1.character.velocidad, p2.character.velocidad);
 
   const turnLines = [`Turno ${battle.turn}`];
   const steps = [];
@@ -594,6 +372,196 @@ function resolveRoomTurn(roomId) {
   emitBattleState(roomId);
 }
 
+function resolveFfaAction(combatants, action, actionOrder) {
+  const cloned = combatants.map((combatant) => ({
+    ...combatant,
+    character: {
+      ...combatant.character,
+      usos: { ...combatant.character.usos },
+    },
+  }));
+  const attackerIndex = findCombatantIndex(cloned, action.username);
+  const attacker = cloned[attackerIndex];
+
+  if (!attacker || attacker.character.hpActual <= 0) {
+    return null;
+  }
+
+  const move = attacker.character.ataques.find((candidate) => candidate.id === action.moveId);
+  if (!move) {
+    return { combatants: cloned, text: `${attacker.username} no pudo ejecutar su movimiento.` };
+  }
+
+  let targetIndex = findCombatantIndex(cloned, action.targetUsername);
+  let defenderPlannedMove = null;
+
+  if (move.id === "correr") {
+    const counterSource = actionOrder.find((candidate) => {
+      if (candidate.username === action.username || candidate.targetUsername !== action.username) {
+        return false;
+      }
+
+      const source = cloned[findCombatantIndex(cloned, candidate.username)];
+      const sourceMove = source?.character.ataques.find((candidateMove) => candidateMove.id === candidate.moveId);
+      return source && source.character.hpActual > 0 && sourceMove?.tipo === "ataque";
+    });
+
+    if (counterSource) {
+      targetIndex = findCombatantIndex(cloned, counterSource.username);
+      defenderPlannedMove = cloned[targetIndex]?.character.ataques.find((candidate) => candidate.id === counterSource.moveId) ?? null;
+    }
+  } else if (move.tipo === "ataque" && (targetIndex < 0 || cloned[targetIndex].character.hpActual <= 0)) {
+    targetIndex = cloned.findIndex((combatant) => combatant.username !== action.username && combatant.character.hpActual > 0);
+  }
+
+  if (move.tipo === "ataque" && targetIndex < 0) {
+    return { combatants: cloned, text: `${attacker.username} no encontró un objetivo válido.` };
+  }
+
+  const defender = targetIndex >= 0 ? cloned[targetIndex] : attacker;
+  const defenderHpBefore = defender.character.hpActual;
+  const result = resolveMoveShared({
+    attacker: attacker.character,
+    defender: defender.character,
+    move,
+    attackerLabel: attacker.username,
+    defenderLabel: defender.username,
+    defenderPlannedMove,
+  });
+
+  attacker.character = result.attacker;
+  if (targetIndex >= 0) {
+    cloned[targetIndex].character = result.defender;
+  }
+
+  const target = targetIndex >= 0 ? cloned[targetIndex] : attacker;
+  const visualTargetUsername = move.tipo === "ataque" ? target.username : null;
+
+  return {
+    combatants: cloned,
+    text: result.text,
+    actorUsername: attacker.username,
+    targetUsername: visualTargetUsername,
+    targetDamaged: target.character.hpActual < defenderHpBefore,
+    targetKo: target.character.hpActual <= 0,
+  };
+}
+
+function resolveFfaRoomTurn(roomId) {
+  const room = rooms.get(roomId);
+  if (!room || !room.battle || room.mode !== ROOM_MODES.free_for_all) return;
+
+  const battle = room.battle;
+  const aliveCombatants = getAliveCombatants(battle.combatants);
+  const aliveUsernames = aliveCombatants.map((combatant) => combatant.username);
+  if (!aliveUsernames.every((username) => battle.pendingMoves[username])) return;
+
+  const actionOrder = aliveUsernames
+    .map((username) => {
+      const combatant = battle.combatants.find((candidate) => candidate.username === username);
+      const pendingMove = battle.pendingMoves[username];
+      const move = combatant?.character.ataques.find((candidate) => candidate.id === pendingMove?.moveId);
+      if (!combatant || !move) return null;
+      return {
+        username,
+        moveId: pendingMove.moveId,
+        targetUsername: pendingMove.targetUsername || null,
+        priority: move.prioridad || 0,
+        speed: combatant.character.velocidad || 0,
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => (b.priority - a.priority) || (b.speed - a.speed) || a.username.localeCompare(b.username));
+
+  let combatants = battle.combatants.map((combatant) => ({
+    ...combatant,
+    character: {
+      ...combatant.character,
+      usos: { ...combatant.character.usos },
+    },
+  }));
+  const turnLines = [`Turno ${battle.turn}`];
+  const steps = [];
+
+  for (const action of actionOrder) {
+    const result = resolveFfaAction(combatants, action, actionOrder);
+    if (!result) continue;
+    combatants = result.combatants;
+    turnLines.push(result.text);
+    steps.push({
+      actorUsername: result.actorUsername,
+      targetUsername: result.targetUsername,
+      text: result.text,
+      targetDamaged: result.targetDamaged,
+      targetKo: result.targetKo,
+    });
+
+    if (getAliveCombatants(combatants).length <= 1) {
+      break;
+    }
+  }
+
+  battle.combatants = resetCombatantsRound(combatants);
+  battle.pendingMoves = {};
+  battle.log = [...turnLines.reverse(), ...battle.log].slice(0, 24);
+
+  const survivors = getAliveCombatants(battle.combatants);
+  if (survivors.length === 1) {
+    battle.winner = survivors[0].username;
+    battle.log = [`${survivors[0].username} ganó la partida.`, ...battle.log].slice(0, 24);
+  } else if (survivors.length === 0) {
+    battle.winner = "draw";
+    battle.log = ["Empate total.", ...battle.log].slice(0, 24);
+  } else {
+    battle.turn += 1;
+  }
+
+  for (const username of room.players) {
+    const user = users.get(username);
+    if (!user) continue;
+
+    io.to(user.socketId).emit("turn_sequence", {
+      steps,
+      finalState: buildBattlePublicState(room, username),
+    });
+  }
+
+  emitBattleState(roomId);
+}
+
+function removePlayerFromRoom(roomId, username) {
+  const room = rooms.get(roomId);
+  if (!room) return;
+
+  room.players = room.players.filter((playerName) => playerName !== username);
+  delete room.ready[username];
+  delete room.selectedCharacters[username];
+
+  if (room.battle?.pendingMoves) {
+    delete room.battle.pendingMoves[username];
+  }
+
+  if (room.mode === ROOM_MODES.free_for_all && room.battle?.combatants) {
+    room.battle.combatants = room.battle.combatants.filter((combatant) => combatant.username !== username);
+
+    const survivors = getAliveCombatants(room.battle.combatants);
+    if (!room.battle.winner && survivors.length === 1) {
+      room.battle.winner = survivors[0].username;
+      room.battle.log = [`${survivors[0].username} ganó la partida.`, ...room.battle.log].slice(0, 24);
+    }
+  }
+
+  if (room.players.length === 0) {
+    rooms.delete(roomId);
+    return;
+  }
+
+  emitRoomState(roomId);
+  if (room.battle) {
+    emitBattleState(roomId);
+  }
+}
+
 io.on("connection", (socket) => {
   console.log("Cliente conectado:", socket.id);
 
@@ -625,6 +593,7 @@ io.on("connection", (socket) => {
 
       socketToUser.set(socket.id, username);
       emitActiveUsers();
+      emitFfaRooms();
 
       callback?.({ ok: true, username });
     } catch {
@@ -704,27 +673,18 @@ io.on("connection", (socket) => {
     fromSocket?.join(roomId);
     toSocket?.join(roomId);
 
-    rooms.set(roomId, {
-      roomId,
-      players: [from, to],
-      ready: {
-        [from]: false,
-        [to]: false,
-      },
-      selectedCharacters: {
-        [from]: null,
-        [to]: null,
-      },
-      battle: null,
-    });
+    createRoom(roomId, ROOM_MODES.duel, [from, to]);
 
     emitToRoomPlayers(rooms.get(roomId), "battle_started", {
       roomId,
+      mode: ROOM_MODES.duel,
+      maxPlayers: 2,
       players: [from, to],
     });
 
     emitRoomState(roomId);
     emitActiveUsers();
+    emitFfaRooms();
 
     callback?.({ ok: true, roomId });
   });
@@ -751,6 +711,76 @@ io.on("connection", (socket) => {
     callback?.({ ok: true });
   });
 
+  socket.on("create_ffa_room", (_payload, callback) => {
+    const username = socketToUser.get(socket.id);
+    if (!username) {
+      return callback?.({ ok: false, message: "Primero tenés que registrarte." });
+    }
+
+    const user = users.get(username);
+    if (!user || user.status !== "online") {
+      return callback?.({ ok: false, message: "No podés crear una sala ahora." });
+    }
+
+    const roomId = `ffa_${Date.now()}_${Math.floor(Math.random() * 1000)}`;
+    const room = createRoom(roomId, ROOM_MODES.free_for_all, [username], { isPublic: true });
+
+    user.status = "in-room";
+    socket.join(roomId);
+
+    emitToRoomPlayers(room, "battle_started", {
+      roomId,
+      mode: room.mode,
+      maxPlayers: room.maxPlayers,
+      players: room.players,
+    });
+
+    emitRoomState(roomId);
+    emitActiveUsers();
+    emitFfaRooms();
+
+    callback?.({ ok: true, roomId });
+  });
+
+  socket.on("join_ffa_room", ({ roomId }, callback) => {
+    const username = socketToUser.get(socket.id);
+    if (!username) {
+      return callback?.({ ok: false, message: "Primero tenés que registrarte." });
+    }
+
+    const user = users.get(username);
+    const room = rooms.get(roomId);
+
+    if (!user || user.status !== "online") {
+      return callback?.({ ok: false, message: "No podés entrar a una sala ahora." });
+    }
+
+    if (!room || room.mode !== ROOM_MODES.free_for_all || !room.isPublic || room.battle) {
+      return callback?.({ ok: false, message: "La sala FFA ya no está disponible." });
+    }
+
+    if (room.players.includes(username)) {
+      return callback?.({ ok: true, roomId });
+    }
+
+    if (room.players.length >= room.maxPlayers) {
+      return callback?.({ ok: false, message: "La sala ya está completa." });
+    }
+
+    room.players.push(username);
+    room.ready[username] = false;
+    room.selectedCharacters[username] = null;
+
+    user.status = "in-room";
+    socket.join(roomId);
+
+    emitRoomState(roomId);
+    emitActiveUsers();
+    emitFfaRooms();
+
+    callback?.({ ok: true, roomId });
+  });
+
   socket.on("player_ready", ({ roomId, username, characterId }, callback) => {
     const realUsername = socketToUser.get(socket.id);
 
@@ -767,12 +797,16 @@ io.on("connection", (socket) => {
       return callback?.({ ok: false, message: "No pertenecés a esa sala." });
     }
 
+    if (!CHARACTERS[characterId]) {
+      return callback?.({ ok: false, message: "Personaje inválido." });
+    }
+
     room.ready[username] = true;
-    room.selectedCharacters[username] = characterId || null;
+    room.selectedCharacters[username] = characterId;
 
     emitRoomState(roomId);
 
-    const everyoneReady = room.players.every(
+    const everyoneReady = room.players.length === (room.maxPlayers || 2) && room.players.every(
       (p) => room.ready[p] && room.selectedCharacters[p]
     );
 
@@ -782,36 +816,55 @@ io.on("connection", (socket) => {
         if (user) user.status = "in-battle";
       }
 
-      const [u1, u2] = room.players;
-      room.battle = {
-        turn: 1,
-        log: ["La batalla comenzó."],
-        winner: null,
-        pendingMoves: {},
-        player1: {
-          username: u1,
-          character: cloneCharacter(CHARACTERS[room.selectedCharacters[u1]]),
-        },
-        player2: {
-          username: u2,
-          character: cloneCharacter(CHARACTERS[room.selectedCharacters[u2]]),
-        },
-      };
+      if (room.mode === ROOM_MODES.free_for_all) {
+        room.isPublic = false;
+        room.battle = {
+          mode: room.mode,
+          turn: 1,
+          log: ["La batalla Free For All comenzó."],
+          winner: null,
+          pendingMoves: {},
+          combatants: room.players.map((playerName) => ({
+            username: playerName,
+            character: cloneCharacter(CHARACTERS[room.selectedCharacters[playerName]]),
+          })),
+        };
+      } else {
+        const [u1, u2] = room.players;
+        room.battle = {
+          mode: ROOM_MODES.duel,
+          turn: 1,
+          log: ["La batalla comenzó."],
+          winner: null,
+          pendingMoves: {},
+          player1: {
+            username: u1,
+            character: cloneCharacter(CHARACTERS[room.selectedCharacters[u1]]),
+          },
+          player2: {
+            username: u2,
+            character: cloneCharacter(CHARACTERS[room.selectedCharacters[u2]]),
+          },
+        };
+      }
 
       emitToRoomPlayers(room, "start_online_battle", {
         roomId,
+        mode: room.mode || ROOM_MODES.duel,
+        maxPlayers: room.maxPlayers || 2,
         players: room.players,
         selectedCharacters: room.selectedCharacters,
       });
 
       emitBattleState(roomId);
       emitActiveUsers();
+      emitFfaRooms();
     }
 
     callback?.({ ok: true });
   });
 
-  socket.on("submit_move", ({ roomId, moveId }, callback) => {
+  socket.on("submit_move", ({ roomId, moveId, targetUsername }, callback) => {
     const username = socketToUser.get(socket.id);
     if (!username) {
       return callback?.({ ok: false, message: "Usuario no registrado." });
@@ -828,6 +881,37 @@ io.on("connection", (socket) => {
 
     if (room.battle.winner) {
       return callback?.({ ok: false, message: "La batalla ya terminó." });
+    }
+
+    if (room.mode === ROOM_MODES.free_for_all) {
+      const selfCombatant = room.battle.combatants.find((combatant) => combatant.username === username);
+      if (!selfCombatant || selfCombatant.character.hpActual <= 0) {
+        return callback?.({ ok: false, message: "Tu personaje ya fue derrotado." });
+      }
+
+      const move = selfCombatant.character.ataques.find((candidate) => candidate.id === moveId);
+      if (!move) {
+        return callback?.({ ok: false, message: "Movimiento inválido." });
+      }
+
+      if (move.tipo === "ataque" && !targetUsername) {
+        return callback?.({ ok: false, message: "Tenés que elegir un objetivo." });
+      }
+
+      room.battle.pendingMoves[username] = {
+        moveId,
+        targetUsername: targetUsername || null,
+      };
+      emitBattleState(roomId);
+
+      const allAliveSubmitted = getAliveCombatants(room.battle.combatants)
+        .every((combatant) => !!room.battle.pendingMoves[combatant.username]);
+
+      if (allAliveSubmitted) {
+        resolveFfaRoomTurn(roomId);
+      }
+
+      return callback?.({ ok: true });
     }
 
     room.battle.pendingMoves[username] = moveId;
@@ -852,22 +936,12 @@ io.on("connection", (socket) => {
     if (user) user.status = "online";
 
     if (roomId) {
-      const room = rooms.get(roomId);
-      if (room) {
-        room.players = room.players.filter((p) => p !== username);
-        delete room.ready[username];
-        delete room.selectedCharacters[username];
-
-        if (room.players.length === 0) {
-          rooms.delete(roomId);
-        } else {
-          emitRoomState(roomId);
-        }
-      }
+      removePlayerFromRoom(roomId, username);
     }
 
     socket.leave(roomId);
     emitActiveUsers();
+    emitFfaRooms();
     callback?.({ ok: true });
   });
 
@@ -891,24 +965,20 @@ io.on("connection", (socket) => {
       const roomData = getRoomByUsername(username);
       if (roomData) {
         const { roomId, room } = roomData;
-        room.players = room.players.filter((p) => p !== username);
-        delete room.ready[username];
-        delete room.selectedCharacters[username];
+        removePlayerFromRoom(roomId, username);
 
-        if (room.players.length === 0) {
-          rooms.delete(roomId);
-        } else {
+        if (!room.battle) {
           for (const otherUsername of room.players) {
             const otherUser = users.get(otherUsername);
             if (otherUser) {
               otherUser.status = "online";
             }
           }
-          emitRoomState(roomId);
         }
       }
 
       emitActiveUsers();
+      emitFfaRooms();
     }
 
     console.log("Cliente desconectado:", socket.id);
@@ -920,3 +990,5 @@ const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
   console.log(`Servidor escuchando en http://localhost:${PORT}`);
 });
+
+

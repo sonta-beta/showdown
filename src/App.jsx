@@ -1,6 +1,25 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { socket } from "./lib/socket";
 import battleBackground from "./assets/battle_bg.png";
+import {
+  buildDefaultFfaSlots as buildDefaultFfaSlotsShared,
+  CHARACTERS as CHARACTERS_SHARED,
+  DIFFICULTIES as DIFFICULTIES_SHARED,
+  GAME_MODES as GAME_MODES_SHARED,
+  getMoveDetails as getMoveDetailsShared,
+  getSpriteFileName as getSpriteFileNameShared
+} from "./lib/gameData";
+import {
+  chooseFirstAttacker as chooseFirstAttackerShared,
+  cloneCharacter as cloneCharacterShared,
+  cloneFfaFighter as cloneFfaFighterShared,
+  getAliveFfaIndexes as getAliveFfaIndexesShared,
+  getNextPendingFfaPlayerIndex as getNextPendingFfaPlayerIndexShared,
+  resetFfaRoundState as resetFfaRoundStateShared,
+  resetTurnFlags as resetTurnFlagsShared,
+  resolveMove as resolveMoveShared
+} from "./lib/gameEngine";
+import { pickAiMove as pickAiMoveShared } from "./lib/ai";
 
 const CHARACTERS = {
   alan_soma: {
@@ -10,17 +29,17 @@ const CHARACTERS = {
     ataque: 9,
     defensa: 20,
     velocidad: 6,
-    descripcion: "Tanque resistente que aguanta y busca rematar con Tragar.",
+    descripcion: "Tanque resistente que usa Rebote y busca rematar con Tragar.",
     spriteScale: 1,
     ataques: [
       {
-        id: "aguante",
-        nombre: "Aguante",
+        id: "rebote",
+        nombre: "Rebote",
         tipo: "defensivo",
         efectividad: 80,
         prioridad: 1,
         limiteUso: 15,
-        descripcion: "Recibe solo el 30% del daño rival ese turno."
+        descripcion: "Recibe solo el 50% del dano rival y devuelve ese 50% al atacante ese turno."
       },
       {
         id: "tragar",
@@ -73,10 +92,10 @@ const CHARACTERS = {
         id: "golpe_inutil",
         nombre: "Golpe inútil",
         tipo: "ataque",
-        poder: 40,
+        poder: 20,
         efectividad: 100,
         limiteUso: 25,
-        descripcion: "Golpe básico débil."
+        descripcion: "Golpe basico flojo, pero tiene 20% de salir con poder 150."
       }
     ]
   },
@@ -140,56 +159,49 @@ const DIFFICULTIES = {
   }
 };
 
+const GAME_MODES = {
+  duel: {
+    id: "duel",
+    nombre: "Duelo",
+    descripcion: "El modo actual 1 contra 1."
+  },
+  free_for_all: {
+    id: "free_for_all",
+    nombre: "Free For All",
+    descripcion: "Cuatro jugadores en una sola batalla hasta que quede uno."
+  }
+};
+
+function buildDefaultFfaSlots() {
+  return buildDefaultFfaSlotsShared();
+}
+
+function cloneFfaFighter(slot) {
+  return cloneFfaFighterShared(slot, CHARACTERS_SHARED);
+}
+
+function getAliveFfaIndexes(fighters) {
+  return getAliveFfaIndexesShared(fighters);
+}
+
+function getNextPendingFfaPlayerIndex(fighters, selections, startIndex = -1) {
+  return getNextPendingFfaPlayerIndexShared(fighters, selections, startIndex);
+}
+
+function resetFfaRoundState(fighters) {
+  return resetFfaRoundStateShared(fighters);
+}
+
 function cloneCharacter(base) {
-  return {
-    ...base,
-    hpActual: base.hp,
-    ataqueBoost: 1,
-    defensaBoost: 1,
-    protegerTurno: false,
-    esquivaAtaqueTurno: false,
-    usos: Object.fromEntries(base.ataques.map((a) => [a.id, a.limiteUso]))
-  };
+  return cloneCharacterShared(base);
 }
 
 function randomInt(min, max) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-function roll(percent) {
-  return Math.random() * 100 < percent;
-}
-
 function getMoveDetails(move) {
-  const details = [];
-
-  if (move.id === "tragar") {
-    details.push("5% poder 1000");
-    details.push("55% poder 200");
-    details.push("40% falla");
-  } else if (typeof move.poder === "number") {
-    details.push(`Poder ${move.poder}`);
-  } else {
-    details.push("Sin daño base");
-  }
-
-  if (typeof move.efectividad === "number") {
-    details.push(`Precision ${move.efectividad}%`);
-  }
-
-  if (typeof move.prioridad === "number") {
-    details.push(`Prioridad ${move.prioridad}`);
-  }
-
-  return details;
-}
-
-function rollTragarOutcome() {
-  const roll = Math.random() * 100;
-
-  if (roll < 5) return { hit: true, poder: 1000 };
-  if (roll < 60) return { hit: true, poder: 200 };
-  return { hit: false, poder: 0 };
+  return getMoveDetailsShared(move);
 }
 
 function getDamage(attacker, defender, move) {
@@ -202,9 +214,7 @@ function getDamage(attacker, defender, move) {
 }
 
 function getSpriteFileName(spriteKey, variant, pose = "normal") {
-  return pose === "normal"
-    ? `${spriteKey}_${variant}.png`
-    : `${spriteKey}_${variant}_${pose}.png`;
+  return getSpriteFileNameShared(spriteKey, variant, pose);
 }
 
 function runSelfTests() {
@@ -226,6 +236,16 @@ function runSelfTests() {
   const tragar = CHARACTERS.alan_soma.ataques.find((a) => a.id === "tragar");
   if (!tragar || !tragar.descripcion.includes("55% de hacer un golpe de poder 200")) {
     throw new Error("Test failed: Tragar debería indicar sus nuevos valores de poder.");
+  }
+
+  const rebote = CHARACTERS.alan_soma.ataques.find((a) => a.id === "rebote");
+  if (!rebote || !rebote.descripcion.includes("50%")) {
+    throw new Error("Test failed: Rebote debería estar configurado con mitigacion y reflejo.");
+  }
+
+  const golpeInutil = CHARACTERS.ramon.ataques.find((a) => a.id === "golpe_inutil");
+  if (!golpeInutil || golpeInutil.poder !== 20) {
+    throw new Error("Test failed: Golpe inutil debería tener poder base 20.");
   }
 
   if (getSpriteFileName("ramon", "front", "hit") !== "ramon_front_hit.png") {
@@ -310,12 +330,438 @@ function HpPanel({ name, hp, maxHp, side = "enemy" }) {
   );
 }
 
+const FFA_STAGE_LAYOUT = [
+  {
+    side: "left",
+    hudClassName: "ffa-stage-hud-slot-0",
+    spriteClassName: "ffa-stage-sprite-slot-0",
+    variant: "front",
+    mirrored: false,
+    scale: 1
+  },
+  {
+    side: "right",
+    hudClassName: "ffa-stage-hud-slot-1",
+    spriteClassName: "ffa-stage-sprite-slot-1",
+    variant: "front",
+    mirrored: true,
+    scale: 1
+  },
+  {
+    side: "left",
+    hudClassName: "ffa-stage-hud-slot-2",
+    spriteClassName: "ffa-stage-sprite-slot-2",
+    variant: "back",
+    mirrored: false,
+    scale: 1
+  },
+  {
+    side: "right",
+    hudClassName: "ffa-stage-hud-slot-3",
+    spriteClassName: "ffa-stage-sprite-slot-3",
+    variant: "back",
+    mirrored: true,
+    scale: 1
+  }
+];
+
+const FFA_STAGE_ANCHORS = [
+  { x: 0.2, y: 0.37 },
+  { x: 0.79, y: 0.36 },
+  { x: 0.32, y: 0.83 },
+  { x: 0.71, y: 0.84 }
+];
+
+const FFA_STAGE_SCALE_BY_CHARACTER = {
+  alan_soma: 1.12,
+  ramon: 1,
+  sonoda: 0.98
+};
+
+const FFA_SIDEBAR_SCALE_BY_CHARACTER = {
+  alan_soma: 1.02,
+  ramon: 0.96,
+  sonoda: 0.95
+};
+
+function classNames(...parts) {
+  return parts.filter(Boolean).join(" ");
+}
+
+function getFfaHpTone(hp, maxHp) {
+  const hpPct = maxHp > 0 ? Math.max(0, (hp / maxHp) * 100) : 0;
+  const toneClassName = hpPct <= 20 ? "is-danger" : hpPct <= 50 ? "is-caution" : "is-healthy";
+
+  return {
+    hpPct,
+    toneClassName
+  };
+}
+
+function getFfaSpriteScale(spriteKey, surface = "stage") {
+  const scaleMap = surface === "sidebar"
+    ? FFA_SIDEBAR_SCALE_BY_CHARACTER
+    : FFA_STAGE_SCALE_BY_CHARACTER;
+
+  return scaleMap[spriteKey] ?? 1;
+}
+
+function buildLocalFfaArenaCombatants(fighters, currentIndex, selections, battleOver) {
+  return fighters.map((fighter, index) => {
+    const isAlive = fighter.character.hpActual > 0;
+    const isCurrent = !battleOver && index === currentIndex;
+    const alreadyPicked = Boolean(selections[index]);
+
+    let statusLabel = "Espera";
+    if (!isAlive) statusLabel = "KO";
+    else if (battleOver) statusLabel = "Vivo";
+    else if (isCurrent) statusLabel = "Activa";
+    else if (alreadyPicked) statusLabel = "Listo";
+
+    return {
+      key: fighter.slotId,
+      ownerLabel: `J${index + 1}`,
+      name: fighter.character.nombre,
+      spriteKey: fighter.character.id,
+      hp: fighter.character.hp,
+      hpActual: fighter.character.hpActual,
+      statusLabel,
+      highlight: isCurrent
+    };
+  });
+}
+
+function buildOnlineFfaArenaCombatants(combatants, battleOver) {
+  return combatants.map((combatant) => {
+    const isAlive = combatant.hpActual > 0;
+
+    let statusLabel = "Activo";
+    if (!isAlive) statusLabel = "KO";
+    else if (battleOver) statusLabel = "Vivo";
+    else if (combatant.isMe) statusLabel = combatant.pending ? "Listo" : "Mover";
+    else if (combatant.pending) statusLabel = "Listo";
+
+    return {
+      key: combatant.username,
+      ownerLabel: combatant.nombre,
+      name: combatant.username,
+      spriteKey: combatant.characterId,
+      hp: combatant.hp,
+      hpActual: combatant.hpActual,
+      statusLabel,
+      highlight: combatant.isMe
+    };
+  });
+}
+
+function buildLocalFfaSpriteStates(fighters) {
+  return Object.fromEntries(
+    fighters.map((fighter) => [
+      String(fighter.slotId),
+      {
+        pose: fighter.character.hpActual > 0 ? "normal" : "ko",
+        acting: false,
+        flashing: false
+      }
+    ])
+  );
+}
+
+function buildOnlineFfaSpriteStates(combatants) {
+  return Object.fromEntries(
+    combatants.map((combatant) => [
+      String(combatant.username),
+      {
+        pose: combatant.hpActual > 0 ? "normal" : "ko",
+        acting: false,
+        flashing: false
+      }
+    ])
+  );
+}
+
+function patchFfaSpriteState(currentState, key, patch) {
+  if (key === null || key === undefined) {
+    return currentState;
+  }
+
+  const normalizedKey = String(key);
+  const previous = currentState[normalizedKey] || {
+    pose: "normal",
+    acting: false,
+    flashing: false
+  };
+
+  return {
+    ...currentState,
+    [normalizedKey]: {
+      ...previous,
+      ...patch
+    }
+  };
+}
+
+function getFfaAttackTranslate(actorIndex, targetIndex, stageSize) {
+  if (
+    actorIndex === undefined
+    || targetIndex === undefined
+    || actorIndex === targetIndex
+    || !stageSize.width
+    || !stageSize.height
+  ) {
+    return null;
+  }
+
+  const actorAnchor = FFA_STAGE_ANCHORS[actorIndex];
+  const targetAnchor = FFA_STAGE_ANCHORS[targetIndex];
+
+  if (!actorAnchor || !targetAnchor) {
+    return null;
+  }
+
+  const rawX = (targetAnchor.x - actorAnchor.x) * stageSize.width * 0.56;
+  const rawY = (targetAnchor.y - actorAnchor.y) * stageSize.height * 0.56;
+
+  return {
+    x: Math.round(rawX),
+    y: Math.round(rawY)
+  };
+}
+
+function FfaStageSprite({
+  spriteKey,
+  name,
+  mirrored = false,
+  variant = "front",
+  pose = "normal",
+  scale = 1,
+  acting = false,
+  flashing = false,
+  attackTranslate = null,
+  className = ""
+}) {
+  const fileName = getSpriteFileName(spriteKey, variant, pose);
+  const normalizedScale = scale * getFfaSpriteScale(spriteKey, "stage");
+  const transform = `${mirrored ? "scaleX(-1) " : ""}scale(${normalizedScale})`;
+
+  return (
+    <div
+      className={classNames("ffa-stage-sprite", className)}
+      style={{
+        transform: acting && attackTranslate
+          ? `translate(${attackTranslate.x}px, ${attackTranslate.y}px)`
+          : "translate(0px, 0px)",
+        transition: "transform 180ms ease"
+      }}
+    >
+      <div className="ffa-stage-sprite-shadow" />
+      <img
+        src={`/sprites/${fileName}`}
+        alt={name}
+        className="ffa-stage-sprite-image"
+        style={{
+          transform,
+          transformOrigin: "bottom center",
+          transition: "transform 180ms ease, filter 120ms ease, opacity 120ms ease",
+          filter: flashing ? "brightness(1.85) saturate(1.3)" : "none",
+          opacity: flashing ? 0.82 : 1
+        }}
+        onError={(e) => {
+          e.currentTarget.style.display = "none";
+        }}
+      />
+    </div>
+  );
+}
+
+function FfaSidebarSlot({ combatant, slotIndex }) {
+  const layout = FFA_STAGE_LAYOUT[slotIndex];
+  const sideClassName = layout.side === "left" ? "is-left" : "is-right";
+
+  if (!combatant) {
+    return (
+      <div className={classNames("ffa-side-slot", sideClassName, "is-empty")}>
+        <div className="ffa-side-slot-top">
+          <div className="ffa-side-slot-owner">Esperando</div>
+          <span className="ffa-side-slot-status">Libre</span>
+        </div>
+        <div className="ffa-side-slot-name">Sin rival</div>
+      </div>
+    );
+  }
+
+  const { hpPct, toneClassName } = getFfaHpTone(combatant.hpActual, combatant.hp);
+  const fileName = getSpriteFileName(combatant.spriteKey, "front", combatant.hpActual > 0 ? "normal" : "ko");
+  const avatarScale = getFfaSpriteScale(combatant.spriteKey, "sidebar");
+  const avatarTransform = `${layout.side === "right" ? "scaleX(-1) " : ""}scale(${avatarScale})`;
+
+  return (
+    <div
+      className={classNames(
+        "ffa-side-slot",
+        sideClassName,
+        toneClassName,
+        combatant.highlight && "is-active",
+        combatant.hpActual <= 0 && "is-ko"
+      )}
+    >
+      <div className="ffa-side-slot-top">
+        <div className="ffa-side-slot-owner">{combatant.ownerLabel}</div>
+        <span className="ffa-side-slot-status">{combatant.statusLabel}</span>
+      </div>
+      <div className="ffa-side-slot-name">{combatant.name}</div>
+
+      <div className="ffa-side-slot-avatar">
+        <img
+          src={`/sprites/${fileName}`}
+          alt={combatant.name}
+          className="ffa-side-slot-avatar-image"
+          style={{
+            transform: avatarTransform,
+            transformOrigin: "bottom center"
+          }}
+          onError={(e) => {
+            e.currentTarget.style.display = "none";
+          }}
+        />
+      </div>
+
+      <div className="ffa-side-slot-bottom">
+        <div className="ffa-side-slot-track">
+          <div className="ffa-side-slot-fill" style={{ width: `${hpPct}%` }} />
+        </div>
+        <div className="ffa-side-slot-hp">{combatant.hpActual}/{combatant.hp}</div>
+      </div>
+    </div>
+  );
+}
+
+function FfaBattleArena({
+  combatants,
+  spriteStates = {},
+  turn,
+  arenaLabel = "Free For All",
+  turnNote = ""
+}) {
+  const stageRef = useRef(null);
+  const [stageSize, setStageSize] = useState({ width: 0, height: 0 });
+  const slots = Array.from({ length: 4 }, (_, index) => combatants[index] ?? null);
+  const slotIndexByKey = Object.fromEntries(
+    slots
+      .filter(Boolean)
+      .map((combatant, index) => [String(combatant.key), index])
+  );
+
+  useEffect(() => {
+    const node = stageRef.current;
+    if (!node) return undefined;
+
+    const updateStageSize = () => {
+      const rect = node.getBoundingClientRect();
+      setStageSize({
+        width: rect.width,
+        height: rect.height
+      });
+    };
+
+    updateStageSize();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => updateStageSize());
+      observer.observe(node);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener("resize", updateStageSize);
+    return () => window.removeEventListener("resize", updateStageSize);
+  }, []);
+
+  return (
+    <div className="ffa-showdown-shell">
+      <div className="ffa-showdown-board">
+        <div className="ffa-side-column">
+          {[0, 2].map((slotIndex) => (
+            <FfaSidebarSlot
+              key={`ffa-side-${slotIndex}-${slots[slotIndex]?.key ?? "empty"}`}
+              combatant={slots[slotIndex]}
+              slotIndex={slotIndex}
+            />
+          ))}
+        </div>
+
+        <div
+          ref={stageRef}
+          className="ffa-showdown-stage"
+          style={{ backgroundImage: `url(${battleBackground})` }}
+        >
+          <div className="ffa-showdown-stage-overlay" />
+          <div className="ffa-showdown-stage-floor" />
+
+          <div className="ffa-stage-turn-badge">
+            <div className="ffa-stage-turn-kicker">{arenaLabel}</div>
+            <div className="ffa-stage-turn-main">Turno {turn}</div>
+            {turnNote ? <div className="ffa-stage-turn-note">{turnNote}</div> : null}
+          </div>
+
+          {slots.map((combatant, index) => {
+            if (!combatant) return null;
+
+            const layout = FFA_STAGE_LAYOUT[index];
+            const spriteState = spriteStates[String(combatant.key)] || {
+              pose: combatant.hpActual > 0 ? "normal" : "ko",
+              acting: false,
+              flashing: false
+            };
+            const targetIndex = spriteState.targetKey !== undefined && spriteState.targetKey !== null
+              ? slotIndexByKey[String(spriteState.targetKey)]
+              : undefined;
+            const attackTranslate = getFfaAttackTranslate(index, targetIndex, stageSize);
+
+            return (
+              <React.Fragment key={`ffa-stage-${combatant.key}`}>
+                <FfaStageSprite
+                  spriteKey={combatant.spriteKey}
+                  name={combatant.name}
+                  mirrored={layout.mirrored}
+                  variant={layout.variant}
+                  pose={spriteState.pose}
+                  scale={layout.scale}
+                  acting={spriteState.acting}
+                  flashing={spriteState.flashing}
+                  attackTranslate={attackTranslate}
+                  className={layout.spriteClassName}
+                />
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        <div className="ffa-side-column">
+          {[1, 3].map((slotIndex) => (
+            <FfaSidebarSlot
+              key={`ffa-side-${slotIndex}-${slots[slotIndex]?.key ?? "empty"}`}
+              combatant={slots[slotIndex]}
+              slotIndex={slotIndex}
+            />
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [screen, setScreen] = useState("auth");
+  const [activeHomeTab, setActiveHomeTab] = useState("jugar_local");
+  const [gameModeId, setGameModeId] = useState("duel");
   const [selectedId, setSelectedId] = useState("alan_soma");
   const [difficultyId, setDifficultyId] = useState("normal");
   const [player, setPlayer] = useState(null);
   const [enemy, setEnemy] = useState(null);
+  const [ffaSlots, setFfaSlots] = useState(() => buildDefaultFfaSlots());
+  const [ffaPlayers, setFfaPlayers] = useState([]);
+  const [ffaSelections, setFfaSelections] = useState({});
+  const [ffaCurrentPlayerIndex, setFfaCurrentPlayerIndex] = useState(0);
   const [turn, setTurn] = useState(1);
   const [logs, setLogs] = useState(["Elegí personaje y dificultad para empezar."]);
   const [battleOver, setBattleOver] = useState(false);
@@ -326,17 +772,23 @@ export default function App() {
   const [enemyActing, setEnemyActing] = useState(false);
   const [playerFlashing, setPlayerFlashing] = useState(false);
   const [enemyFlashing, setEnemyFlashing] = useState(false);
+  const [ffaSpriteStates, setFfaSpriteStates] = useState({});
+  const [onlineFfaSpriteStates, setOnlineFfaSpriteStates] = useState({});
   const [usernameInput, setUsernameInput] = useState("");
   const [username, setUsername] = useState("");
   const [activeUsers, setActiveUsers] = useState([]);
+  const [availableFfaRooms, setAvailableFfaRooms] = useState([]);
   const [challengeTarget, setChallengeTarget] = useState("");
   const [challengeMessage, setChallengeMessage] = useState("");
   const [incomingChallenge, setIncomingChallenge] = useState(null);
   const [currentRoomId, setCurrentRoomId] = useState("");
+  const [currentRoomMode, setCurrentRoomMode] = useState("duel");
+  const [currentRoomMaxPlayers, setCurrentRoomMaxPlayers] = useState(2);
   const [roomPlayers, setRoomPlayers] = useState([]);
   const [roomReady, setRoomReady] = useState({});
   const [roomSelectedCharacters, setRoomSelectedCharacters] = useState({});
   const [roomSelectedCharacter, setRoomSelectedCharacter] = useState("alan_soma");
+  const [onlineFfaCombatants, setOnlineFfaCombatants] = useState([]);
   const [onlineBattleMode, setOnlineBattleMode] = useState(false);
   const [selectedMoveId, setSelectedMoveId] = useState(null);
   const [mobileLogOpen, setMobileLogOpen] = useState(false);
@@ -349,16 +801,53 @@ export default function App() {
   const pendingOnlineBattleStateRef = useRef(null);
 
   const selectedCharacter = CHARACTERS[selectedId];
+  const gameMode = GAME_MODES[gameModeId];
   const enemyBase = useMemo(
     () => CHARACTERS[selectedId === "alan_soma" ? "ramon" : "alan_soma"],
     [selectedId]
   );
   const difficulty = DIFFICULTIES[difficultyId];
   const selectedMove = player?.ataques.find((move) => move.id === selectedMoveId) ?? null;
+  const ffaCurrentPlayer = ffaPlayers[ffaCurrentPlayerIndex] ?? null;
+  const ffaSelectedMove = ffaCurrentPlayer?.character.ataques.find((move) => move.id === selectedMoveId) ?? null;
+  const onlineFfaPlayer = onlineFfaCombatants.find((combatant) => combatant.isMe) ?? null;
+  const onlineFfaSelectedMove = onlineFfaPlayer?.ataques.find((move) => move.id === selectedMoveId) ?? null;
+  const isFfaBattle = screen === "battle" && gameModeId === "free_for_all" && ffaPlayers.length > 0;
+  const isOnlineFfaBattle = screen === "battle" && onlineBattleMode && currentRoomMode === "free_for_all" && onlineFfaCombatants.length > 0;
   const battleInputLocked = busy;
+  const localFfaArenaCombatants = isFfaBattle
+    ? buildLocalFfaArenaCombatants(ffaPlayers, ffaCurrentPlayerIndex, ffaSelections, battleOver)
+    : [];
+  const onlineFfaArenaCombatants = isOnlineFfaBattle
+    ? buildOnlineFfaArenaCombatants(onlineFfaCombatants, battleOver)
+    : [];
+  function openHomeTab(tabId) {
+    setActiveHomeTab(tabId);
+
+    if (tabId === "jugar_local") {
+      setScreen("menu");
+      return;
+    }
+
+    if (!username) {
+      setScreen("auth");
+      setChallengeMessage("Entrá con un usuario para ver las salas online.");
+      return;
+    }
+
+    setScreen("lobby");
+  }
 
   function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  function resetLocalFfaSpriteStates(fighters) {
+    setFfaSpriteStates(buildLocalFfaSpriteStates(fighters));
+  }
+
+  function resetOnlineFfaSpriteStates(combatants) {
+    setOnlineFfaSpriteStates(buildOnlineFfaSpriteStates(combatants));
   }
 
   function hydrateCharacterForBattle(stateCharacter) {
@@ -384,20 +873,39 @@ export default function App() {
       onlineBattleFallbackRef.current = null;
     }
 
+    setCurrentRoomMode(battleState.mode || "duel");
+    setCurrentRoomId(battleState.roomId || "");
+    setTurn(battleState.turn || 1);
+    setLogs(battleState.log || ["La batalla online comenzó."]);
+    setBattleOver(Boolean(battleState.winner));
+    setScreen("battle");
+
+    if (battleState.mode === "free_for_all") {
+      const nextCombatants = battleState.combatants || [];
+      const me = nextCombatants.find((combatant) => combatant.isMe);
+
+      setOnlineBattleMode(true);
+      setOnlineFfaCombatants(nextCombatants);
+      resetOnlineFfaSpriteStates(nextCombatants);
+      setPlayer(null);
+      setEnemy(null);
+      setSelectedId(me?.characterId || selectedId);
+      setRoomSelectedCharacter(me?.characterId || roomSelectedCharacter);
+      setBusy(Boolean(me?.pending) && !battleState.winner);
+      return;
+    }
+
     const nextPlayer = hydrateCharacterForBattle(battleState.me);
     const nextEnemy = hydrateCharacterForBattle(battleState.enemy);
 
     setOnlineBattleMode(true);
-    setCurrentRoomId(battleState.roomId || "");
+    setOnlineFfaCombatants([]);
+    setOnlineFfaSpriteStates({});
     setSelectedId(nextPlayer.id || "alan_soma");
     setRoomSelectedCharacter(nextPlayer.id || "alan_soma");
     setPlayer(nextPlayer);
     setEnemy(nextEnemy);
-    setTurn(battleState.turn || 1);
-    setLogs(battleState.log || ["La batalla online comenzó."]);
-    setBattleOver(Boolean(battleState.winner));
     setBusy(Boolean(battleState.pendingMoves?.me) && !battleState.winner);
-    setScreen("battle");
   }
 
   async function playOnlineTurnSequence(payload) {
@@ -467,6 +975,70 @@ export default function App() {
     }
   }
 
+  async function playOnlineFfaTurnSequence(payload) {
+    const steps = payload?.steps || [];
+
+    onlineTurnAnimatingRef.current = true;
+    setBusy(true);
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
+
+    for (const step of steps) {
+      setOnlineFfaSpriteStates((current) => patchFfaSpriteState(current, step.actorUsername, {
+        acting: true,
+        targetKey: step.targetUsername ?? null
+      }));
+      await sleep(320);
+
+      setLogs((prev) => [step.text, ...prev].slice(0, 24));
+
+      if (step.targetKo) {
+        setOnlineFfaSpriteStates((current) => patchFfaSpriteState(current, step.targetUsername, { pose: "ko", flashing: false }));
+      } else if (step.targetDamaged) {
+        setOnlineFfaSpriteStates((current) => patchFfaSpriteState(current, step.targetUsername, { pose: "hit", flashing: true }));
+      }
+
+      await sleep(380);
+
+      if (step.targetDamaged && !step.targetKo) {
+        setOnlineFfaSpriteStates((current) => patchFfaSpriteState(current, step.targetUsername, { pose: "normal", flashing: false }));
+      }
+
+      setOnlineFfaSpriteStates((current) => patchFfaSpriteState(current, step.actorUsername, {
+        acting: false,
+        targetKey: null
+      }));
+      await sleep(220);
+    }
+
+    const nextState = pendingOnlineBattleStateRef.current || payload?.finalState;
+    pendingOnlineBattleStateRef.current = null;
+    onlineTurnAnimatingRef.current = false;
+
+    if (nextState) {
+      applyOnlineBattleState(nextState);
+    } else {
+      setBusy(false);
+    }
+  }
+
+  function submitOnlineFfaMove(move, targetUsername = null) {
+    if (!currentRoomId || currentRoomMode !== "free_for_all") return;
+
+    socket.emit("submit_move", { roomId: currentRoomId, moveId: move.id, targetUsername }, (response) => {
+      if (!response?.ok) {
+        setBusy(false);
+        setSelectedMoveId(null);
+        setChallengeMessage(response?.message || "No se pudo enviar el movimiento.");
+        return;
+      }
+
+      setBusy(true);
+      setSelectedMoveId(null);
+      setChallengeMessage("Movimiento enviado. Esperando al resto...");
+    });
+  }
+
   function startLegacyOnlineBattle(roomId, selectedCharacters = {}) {
     const myCharacterId = selectedCharacters[username] || roomSelectedCharacter || selectedId || "alan_soma";
     const rivalUsername = roomPlayers.find((playerName) => playerName !== username);
@@ -475,6 +1047,7 @@ export default function App() {
     const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
 
     setOnlineBattleMode(false);
+    setOnlineFfaSpriteStates({});
     setSelectedId(myCharacterId);
     setRoomSelectedCharacter(myCharacterId);
     setPlayer(nextPlayer);
@@ -506,6 +1079,7 @@ export default function App() {
     const nextEnemy = cloneCharacter(CHARACTERS[rivalCharacterId] || CHARACTERS.ramon);
 
     setOnlineBattleMode(true);
+    setOnlineFfaSpriteStates({});
     setSelectedId(myCharacterId);
     setRoomSelectedCharacter(myCharacterId);
     setPlayer(nextPlayer);
@@ -534,6 +1108,10 @@ export default function App() {
       setActiveUsers(list);
     }
 
+    function onFfaRooms(list) {
+      setAvailableFfaRooms(list || []);
+    }
+
     function onChallengeReceived({ from }) {
       setIncomingChallenge({ from });
       setChallengeMessage(`${from} te desafió.`);
@@ -544,38 +1122,57 @@ export default function App() {
       setIncomingChallenge(null);
     }
 
-    function onBattleStarted({ roomId, players }) {
+    function onBattleStarted({ roomId, players, mode, maxPlayers }) {
       if (onlineBattleFallbackRef.current) {
         clearTimeout(onlineBattleFallbackRef.current);
         onlineBattleFallbackRef.current = null;
       }
 
       setCurrentRoomId(roomId);
+      setCurrentRoomMode(mode || "duel");
+      setActiveHomeTab((mode || "duel") === "free_for_all" ? "salas_ffa" : "salas");
+      setCurrentRoomMaxPlayers(maxPlayers || 2);
+      setGameModeId(mode || "duel");
       setRoomPlayers(players || []);
       setRoomReady({});
       setRoomSelectedCharacters({});
       setOnlineBattleMode(false);
+      setOnlineFfaCombatants([]);
       setIncomingChallenge(null);
       setChallengeMessage(`Sala creada: ${roomId}`);
       setScreen("room");
     }
 
-    function onRoomState({ roomId, players, ready, selectedCharacters }) {
+    function onRoomState({ roomId, mode, maxPlayers, players, ready, selectedCharacters }) {
       setCurrentRoomId(roomId || "");
+      setCurrentRoomMode(mode || "duel");
+      setActiveHomeTab((mode || "duel") === "free_for_all" ? "salas_ffa" : "salas");
+      setCurrentRoomMaxPlayers(maxPlayers || 2);
+      setGameModeId(mode || "duel");
       setRoomPlayers(players || []);
       setRoomReady(ready || {});
       setRoomSelectedCharacters(selectedCharacters || {});
+      setScreen("room");
     }
 
-    function onStartOnlineBattle({ roomId, players, selectedCharacters }) {
+    function onStartOnlineBattle({ roomId, mode, maxPlayers, players, selectedCharacters }) {
       setCurrentRoomId(roomId || "");
+      setCurrentRoomMode(mode || "duel");
+      setActiveHomeTab((mode || "duel") === "free_for_all" ? "salas_ffa" : "salas");
+      setCurrentRoomMaxPlayers(maxPlayers || 2);
+      setGameModeId(mode || "duel");
       setRoomPlayers(players || []);
       setRoomSelectedCharacters(selectedCharacters || {});
       setOnlineBattleMode(true);
       setSelectedMoveId(null);
       setPreviewMoveId(null);
+      setOnlineFfaCombatants([]);
       if (onlineBattleFallbackRef.current) {
         clearTimeout(onlineBattleFallbackRef.current);
+      }
+      if (mode === "free_for_all") {
+        setChallengeMessage(`La batalla comenzó en ${roomId}.`);
+        return;
       }
       startOnlineBattlePreview(roomId, selectedCharacters || {});
       onlineBattleFallbackRef.current = setTimeout(() => {
@@ -594,10 +1191,16 @@ export default function App() {
     }
 
     function onTurnSequence(payload) {
+      if ((payload?.finalState?.mode || currentRoomMode) === "free_for_all") {
+        playOnlineFfaTurnSequence(payload);
+        return;
+      }
+
       playOnlineTurnSequence(payload);
     }
 
     socket.on("active_users", onActiveUsers);
+    socket.on("ffa_rooms", onFfaRooms);
     socket.on("challenge_received", onChallengeReceived);
     socket.on("challenge_rejected", onChallengeRejected);
     socket.on("battle_started", onBattleStarted);
@@ -613,6 +1216,7 @@ export default function App() {
       }
 
       socket.off("active_users", onActiveUsers);
+      socket.off("ffa_rooms", onFfaRooms);
       socket.off("challenge_received", onChallengeReceived);
       socket.off("challenge_rejected", onChallengeRejected);
       socket.off("battle_started", onBattleStarted);
@@ -621,6 +1225,7 @@ export default function App() {
       socket.off("turn_sequence", onTurnSequence);
       socket.off("battle_state", onBattleState);
     };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function handleEnterLobby() {
@@ -638,6 +1243,7 @@ export default function App() {
       }
 
       setUsername(response.username);
+      setActiveHomeTab("salas");
       setScreen("lobby");
       setChallengeMessage(`Conectado como ${response.username}.`);
     });
@@ -664,6 +1270,33 @@ export default function App() {
 
       setChallengeTarget(target);
       setChallengeMessage(response.message);
+    });
+  }
+
+  function handleCreateFfaRoom() {
+    if (!username) {
+      setChallengeMessage("Primero entrá al lobby con tu usuario.");
+      return;
+    }
+
+    socket.emit("create_ffa_room", {}, (response) => {
+      if (!response?.ok) {
+        setChallengeMessage(response?.message || "No se pudo crear la sala FFA.");
+        return;
+      }
+
+      setChallengeMessage(`Sala FFA creada: ${response.roomId}.`);
+    });
+  }
+
+  function handleJoinFfaRoom(roomId) {
+    socket.emit("join_ffa_room", { roomId }, (response) => {
+      if (!response?.ok) {
+        setChallengeMessage(response?.message || "No se pudo entrar a la sala FFA.");
+        return;
+      }
+
+      setChallengeMessage(`Entraste a la sala FFA ${roomId}.`);
     });
   }
 
@@ -695,9 +1328,9 @@ export default function App() {
     });
   }
 
-  function handlePrepareLocalBattle() {
-    const target = challengeTarget || enemyBase.nombre;
-    setChallengeMessage(target ? `Preparando sala de prueba contra ${target}.` : "Preparando sala de prueba.");
+  function handleOpenLocalModes() {
+    setActiveHomeTab("jugar_local");
+    setChallengeMessage("Elegí entre Duelo y Free For All.");
     setScreen("menu");
   }
 
@@ -717,7 +1350,11 @@ export default function App() {
           return;
         }
 
-        setChallengeMessage("Marcado como listo. Esperando al otro jugador...");
+        setChallengeMessage(
+          currentRoomMode === "free_for_all"
+            ? "Marcado como listo. Esperando a que se completen los 4 jugadores..."
+            : "Marcado como listo. Esperando al otro jugador..."
+        );
       }
     );
   }
@@ -746,58 +1383,263 @@ export default function App() {
     setScreen("battle");
   }
 
+  function updateFfaSlotCharacter(slotId, characterId) {
+    setFfaSlots((current) => current.map((slot) => (
+      slot.slotId === slotId
+        ? { ...slot, characterId }
+        : slot
+    )));
+  }
+
+  function startFreeForAllBattle() {
+    const nextFighters = ffaSlots.map((slot) => cloneFfaFighter(slot));
+
+    clearQueuedMove();
+    clearTouchPreview();
+    setOnlineBattleMode(false);
+    setPlayer(null);
+    setEnemy(null);
+    setFfaPlayers(nextFighters);
+    resetLocalFfaSpriteStates(nextFighters);
+    setOnlineFfaSpriteStates({});
+    setFfaSelections({});
+    setFfaCurrentPlayerIndex(0);
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
+    setMobileLogOpen(false);
+    setBattleOver(false);
+    setBusy(false);
+    setTurn(1);
+    setLogs([
+      "Comienza el Free For All.",
+      "Cada jugador elige un movimiento y objetivo antes de resolver la ronda."
+    ]);
+    setScreen("battle");
+  }
+
+  function resolveFfaAction(fighters, action, actionOrder) {
+    const attackerEntry = fighters[action.playerIndex];
+
+    if (!attackerEntry || attackerEntry.character.hpActual <= 0) {
+      return null;
+    }
+
+    const nextFighters = fighters.map((fighter) => ({
+      ...fighter,
+      character: {
+        ...fighter.character,
+        usos: { ...fighter.character.usos }
+      }
+    }));
+    const attacker = nextFighters[action.playerIndex];
+    const move = attacker.character.ataques.find((candidate) => candidate.id === action.moveId);
+
+    if (!move) {
+      return {
+        fighters: nextFighters,
+        text: `${attacker.label} no pudo ejecutar su movimiento.`
+      };
+    }
+
+    let targetIndex = action.targetIndex ?? -1;
+    let defenderPlannedMove = null;
+
+    if (move.id === "correr") {
+      const counterSource = actionOrder.find((candidate) => {
+        if (candidate.playerIndex === action.playerIndex || candidate.targetIndex !== action.playerIndex) {
+          return false;
+        }
+
+        const source = nextFighters[candidate.playerIndex];
+        const sourceMove = source?.character.ataques.find((candidateMove) => candidateMove.id === candidate.moveId);
+        return source && source.character.hpActual > 0 && sourceMove?.tipo === "ataque";
+      });
+
+      if (counterSource) {
+        targetIndex = counterSource.playerIndex;
+        defenderPlannedMove = nextFighters[counterSource.playerIndex]?.character.ataques.find((candidate) => candidate.id === counterSource.moveId) ?? null;
+      }
+    } else if (move.tipo === "ataque" && (targetIndex < 0 || nextFighters[targetIndex]?.character.hpActual <= 0)) {
+      targetIndex = nextFighters.findIndex((fighter, index) => index !== action.playerIndex && fighter.character.hpActual > 0);
+    }
+
+    if (move.tipo === "ataque" && targetIndex < 0) {
+      return {
+        fighters: nextFighters,
+        text: `${attacker.label} no encontro un objetivo valido.`
+      };
+    }
+
+    const defender = targetIndex >= 0 ? nextFighters[targetIndex] : attacker;
+    const defenderHpBefore = defender.character.hpActual;
+    const result = resolveMoveShared({
+      attacker: attacker.character,
+      defender: defender.character,
+      move,
+      attackerLabel: attacker.label,
+      defenderLabel: defender.label,
+      defenderPlannedMove
+    });
+
+    attacker.character = result.attacker;
+    if (targetIndex >= 0) {
+      nextFighters[targetIndex].character = result.defender;
+    }
+
+    const targetEntry = targetIndex >= 0 ? nextFighters[targetIndex] : attacker;
+    const visualTargetKey = move.tipo === "ataque" ? targetEntry.slotId : null;
+
+    return {
+      fighters: nextFighters,
+      text: result.text,
+      actorKey: attacker.slotId,
+      targetKey: visualTargetKey,
+      targetDamaged: targetEntry.character.hpActual < defenderHpBefore,
+      targetKo: targetEntry.character.hpActual <= 0
+    };
+  }
+
+  async function resolveFreeForAllRound(nextSelections) {
+    const aliveAtStart = getAliveFfaIndexes(ffaPlayers);
+    const actionOrder = aliveAtStart
+      .map((playerIndex) => {
+        const selection = nextSelections[playerIndex];
+        const fighter = ffaPlayers[playerIndex];
+        const move = fighter.character.ataques.find((candidate) => candidate.id === selection?.moveId);
+
+        if (!move) return null;
+
+        return {
+          playerIndex,
+          moveId: selection.moveId,
+          targetIndex: selection.targetIndex,
+          priority: move.prioridad || 0,
+          speed: fighter.character.velocidad || 0
+        };
+      })
+      .filter(Boolean)
+      .sort((a, b) => {
+        if (b.priority !== a.priority) return b.priority - a.priority;
+        if (b.speed !== a.speed) return b.speed - a.speed;
+        return a.playerIndex - b.playerIndex;
+      });
+
+    let fighters = ffaPlayers.map((fighter) => ({
+      ...fighter,
+      character: {
+        ...fighter.character,
+        usos: { ...fighter.character.usos }
+      }
+    }));
+    const stepStates = [];
+
+    setLogs((prev) => [`Turno ${turn}`, ...prev].slice(0, 24));
+
+    for (const action of actionOrder) {
+      const result = resolveFfaAction(fighters, action, actionOrder);
+      if (!result) continue;
+
+      fighters = result.fighters;
+      stepStates.push({
+        actorKey: result.actorKey,
+        targetKey: result.targetKey,
+        targetDamaged: result.targetDamaged,
+        targetKo: result.targetKo,
+        text: result.text,
+        fighters: fighters.map((fighter) => ({
+          ...fighter,
+          character: {
+            ...fighter.character,
+            usos: { ...fighter.character.usos }
+          }
+        }))
+      });
+
+      const aliveNow = getAliveFfaIndexes(fighters);
+      if (aliveNow.length <= 1) {
+        break;
+      }
+    }
+
+    for (const step of stepStates) {
+      setFfaSpriteStates((current) => patchFfaSpriteState(current, step.actorKey, {
+        acting: true,
+        targetKey: step.targetKey
+      }));
+      await sleep(320);
+
+      setFfaPlayers(step.fighters);
+      setLogs((prev) => [step.text, ...prev].slice(0, 24));
+
+      if (step.targetKo) {
+        setFfaSpriteStates((current) => patchFfaSpriteState(current, step.targetKey, { pose: "ko", flashing: false }));
+      } else if (step.targetDamaged) {
+        setFfaSpriteStates((current) => patchFfaSpriteState(current, step.targetKey, { pose: "hit", flashing: true }));
+      }
+
+      await sleep(380);
+
+      if (step.targetDamaged && !step.targetKo) {
+        setFfaSpriteStates((current) => patchFfaSpriteState(current, step.targetKey, { pose: "normal", flashing: false }));
+      }
+
+      setFfaSpriteStates((current) => patchFfaSpriteState(current, step.actorKey, {
+        acting: false,
+        targetKey: null
+      }));
+      await sleep(220);
+    }
+
+    const finalFighters = resetFfaRoundState(fighters);
+    const survivors = getAliveFfaIndexes(finalFighters);
+
+    if (survivors.length === 1) {
+      setBattleOver(true);
+      setLogs((prev) => [`${finalFighters[survivors[0]].label} ganó el Free For All.`, ...prev].slice(0, 24));
+    } else if (survivors.length === 0) {
+      setBattleOver(true);
+      setLogs((prev) => ["Todos cayeron. Empate total.", ...prev].slice(0, 24));
+    } else {
+      setTurn((current) => current + 1);
+    }
+
+    setFfaPlayers(finalFighters);
+    resetLocalFfaSpriteStates(finalFighters);
+    setFfaSelections({});
+    setFfaCurrentPlayerIndex(survivors[0] ?? 0);
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
+    setBusy(false);
+  }
+
+  function commitFfaSelection(move, targetIndex = null) {
+    if (!ffaCurrentPlayer) return;
+
+    const nextSelections = {
+      ...ffaSelections,
+      [ffaCurrentPlayerIndex]: {
+        moveId: move.id,
+        targetIndex
+      }
+    };
+
+    const nextPlayerIndex = getNextPendingFfaPlayerIndex(ffaPlayers, nextSelections, ffaCurrentPlayerIndex);
+
+    setFfaSelections(nextSelections);
+    setSelectedMoveId(null);
+    setPreviewMoveId(null);
+
+    if (nextPlayerIndex === -1) {
+      setBusy(true);
+      resolveFreeForAllRound(nextSelections);
+      return;
+    }
+
+    setFfaCurrentPlayerIndex(nextPlayerIndex);
+  }
+
   function pickAiMove(currentEnemy) {
-    const available = currentEnemy.ataques.filter((a) => currentEnemy.usos[a.id] > 0);
-    if (!available.length) return currentEnemy.ataques[0];
-
-    const damaging = available.filter((a) => a.tipo === "ataque");
-    const defensive = available.filter((a) => a.tipo === "defensivo");
-
-    if (difficulty.id === "facil") {
-      if (Math.random() < 0.5 && defensive.length > 0) {
-        return defensive[randomInt(0, defensive.length - 1)];
-      }
-      return available[randomInt(0, available.length - 1)];
-    }
-
-    if (difficulty.id === "normal") {
-      if (currentEnemy.id === "alan_soma" && currentEnemy.hpActual < currentEnemy.hp * 0.45) {
-        const aguante = available.find((a) => a.id === "aguante");
-        if (aguante && Math.random() < 0.45) return aguante;
-      }
-
-      if (currentEnemy.id === "ramon" && damaging.length > 0) {
-        return Math.random() < difficulty.aiBiasStrong
-          ? damaging.reduce((best, move) => ((move.poder || 0) > (best.poder || 0) ? move : best))
-          : available[randomInt(0, available.length - 1)];
-      }
-
-      return available[randomInt(0, available.length - 1)];
-    }
-
-    if (currentEnemy.id === "alan_soma") {
-      const tragar = available.find((a) => a.id === "tragar");
-      const aguante = available.find((a) => a.id === "aguante");
-      const golpe = available.find((a) => a.id === "golpe_de_gordo");
-
-      if (tragar && Math.random() < 0.3) return tragar;
-      if (aguante && currentEnemy.hpActual < currentEnemy.hp * 0.55 && Math.random() < 0.55) {
-        return aguante;
-      }
-      if (golpe) return golpe;
-    }
-
-    if (currentEnemy.id === "ramon") {
-      const infiel = available.find((a) => a.id === "infiel");
-      const correr = available.find((a) => a.id === "correr");
-      const golpe = available.find((a) => a.id === "golpe_inutil");
-
-      if (correr && Math.random() < 0.35) return correr;
-      if (infiel && Math.random() < 0.7) return infiel;
-      if (golpe) return golpe;
-    }
-
-    return available[randomInt(0, available.length - 1)];
+    return pickAiMoveShared(currentEnemy, difficulty);
   }
 
   function clearTouchPreview() {
@@ -852,6 +1694,22 @@ export default function App() {
       return;
     }
 
+    if (isOnlineFfaBattle) {
+      setSelectedMoveId(move.id);
+      if (move.tipo !== "ataque") {
+        submitOnlineFfaMove(move);
+      }
+      return;
+    }
+
+    if (isFfaBattle) {
+      setSelectedMoveId(move.id);
+      if (move.tipo !== "ataque") {
+        commitFfaSelection(move);
+      }
+      return;
+    }
+
     clearQueuedMove();
     setSelectedMoveId(move.id);
     queuedMoveTimeoutRef.current = setTimeout(() => {
@@ -866,261 +1724,32 @@ export default function App() {
   }
 
   function handleCancelMove() {
+    if (isFfaBattle) {
+      setSelectedMoveId(null);
+      return;
+    }
+
     clearQueuedMove();
     setSelectedMoveId(null);
   }
 
   function applyMove(attacker, defender, move, chosenByPlayer, defenderMove) {
-    const nextAttacker = { ...attacker, usos: { ...attacker.usos } };
-    const nextDefender = { ...defender, usos: { ...defender.usos } };
-    const owner = chosenByPlayer ? "Tu" : "El rival";
-
-    if (nextAttacker.usos[move.id] <= 0) {
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${owner} ${attacker.nombre} no tiene más usos para ${move.nombre}.`
-      };
-    }
-
-    nextAttacker.usos[move.id] -= 1;
-
-    if (move.id === "aguante") {
-      if (!roll(move.efectividad)) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} intentó Aguante, pero falló.`
-        };
-      }
-
-      nextAttacker.protegerTurno = true;
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${owner} ${attacker.nombre} usó Aguante y reducirá el daño recibido este turno.`
-      };
-    }
-
-    if (move.id === "lolero") {
-      if (!roll(move.efectividad)) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} intentó Lolero, pero falló.`
-        };
-      }
-
-      if (roll(5)) {
-        nextAttacker.hpActual = 0;
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Lolero, engordó demasiado y murió.`
-        };
-      }
-
-      const heal = Math.floor(nextAttacker.hp * 0.25);
-      nextAttacker.hpActual = Math.min(nextAttacker.hp, nextAttacker.hpActual + heal);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${owner} ${attacker.nombre} usó Lolero y recuperó ${heal} de vida.`
-      };
-    }
-
-    if (move.id === "aguante") {
-      if (!roll(move.efectividad)) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} intentó Aguante, pero falló.`
-        };
-      }
-
-      nextAttacker.protegerTurno = true;
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${owner} ${attacker.nombre} usó Aguante y reducirá el daño recibido este turno.`
-      };
-    }
-
-    if (move.id === "tragar") {
-      const outcome = rollTragarOutcome();
-
-      if (!outcome.hit) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Tragar, pero falló.`
-        };
-      }
-
-      if (nextDefender.esquivaAtaqueTurno && outcome.poder === 1000) {
-        const reducedMove = { ...move, poder: 200, efectividad: 100 };
-        const dmg = getDamage(nextAttacker, nextDefender, reducedMove);
-        nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Tragar, pero ${defender.nombre} evitó el ataque letal. El golpe se redujo y causó ${dmg} de daño.`
-        };
-      }
-
-      const resolvedMove = { ...move, poder: outcome.poder, efectividad: 100 };
-      const dmg = getDamage(nextAttacker, nextDefender, resolvedMove);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text:
-          outcome.poder === 1000
-            ? `${owner} ${attacker.nombre} usó Tragar con potencia máxima y causó ${dmg} de daño.`
-            : `${owner} ${attacker.nombre} usó Tragar con poder ${outcome.poder} y causó ${dmg} de daño.`
-      };
-    }
-
-    if (move.id === "kung_fu") {
-      const accuracy = move.efectividad ?? 100;
-      if (!roll(accuracy)) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Kung Fu, pero falló.`
-        };
-      }
-
-      const poweredMove = roll(10) ? { ...move, poder: move.poder * 2 } : move;
-      const dmg = getDamage(nextAttacker, nextDefender, poweredMove);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: poweredMove.poder > move.poder
-          ? `${owner} ${attacker.nombre} usó Kung Fu y duplicó su poder, causando ${dmg} de daño.`
-          : `${owner} ${attacker.nombre} usó Kung Fu e hizo ${dmg} de daño.`
-      };
-    }
-
-    if (move.id === "borracho") {
-      const rollValue = Math.random() * 100;
-
-      if (rollValue < 50) {
-        const borrachoMove = { ...move, poder: 50 };
-        const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
-        nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Borracho e hizo ${dmg} de daño.`
-        };
-      }
-
-      if (rollValue < 70) {
-        const borrachoMove = { ...move, poder: 100 };
-        const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
-        nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Borracho con fuerza y causó ${dmg} de daño.`
-        };
-      }
-
-      if (rollValue < 99) {
-        const selfMove = { ...move, poder: 30 };
-        const selfDmg = getDamage(nextAttacker, nextAttacker, selfMove);
-        nextAttacker.hpActual = Math.max(0, nextAttacker.hpActual - selfDmg);
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó Borracho y se dañó a sí mismo por ${selfDmg}.`
-        };
-      }
-
-      const borrachoMove = { ...move, poder: 1000 };
-      const dmg = getDamage(nextAttacker, nextDefender, borrachoMove);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${owner} ${attacker.nombre} usó Borracho y desató un golpe devastador de ${dmg} de daño.`
-      };
-    }
-
-    if (move.id === "correr") {
-      if (!defenderMove || defenderMove.tipo !== "ataque") {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} intentó Correr, pero el rival no atacó.`
-        };
-      }
-
-      if (!roll(move.efectividad)) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} intentó Correr, pero no pudo esquivar.`
-        };
-      }
-
-      nextAttacker.esquivaAtaqueTurno = true;
-      const dmg = getDamage(nextAttacker, nextDefender, move);
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: `${owner} ${attacker.nombre} esquivó completamente el ataque y contraatacó con Correr por ${dmg} de daño.`
-      };
-    }
-
-    if (move.tipo === "ataque") {
-      const accuracy = move.efectividad ?? 100;
-      if (!roll(accuracy)) {
-        return {
-          attacker: nextAttacker,
-          defender: nextDefender,
-          text: `${owner} ${attacker.nombre} usó ${move.nombre}, pero falló.`
-        };
-      }
-
-      let dmg = getDamage(nextAttacker, nextDefender, move);
-      if (nextDefender.esquivaAtaqueTurno) {
-        dmg = 0;
-      } else if (nextDefender.protegerTurno) {
-        dmg = Math.floor(dmg * 0.3);
-      }
-
-      nextDefender.hpActual = Math.max(0, nextDefender.hpActual - dmg);
-      return {
-        attacker: nextAttacker,
-        defender: nextDefender,
-        text: dmg === 0
-          ? `${owner} ${attacker.nombre} usó ${move.nombre}, pero el rival lo esquivó.`
-          : `${owner} ${attacker.nombre} usó ${move.nombre} e hizo ${dmg} de daño.`
-      };
-    }
-
-    return {
-      attacker: nextAttacker,
-      defender: nextDefender,
-      text: `${owner} ${attacker.nombre} no hizo nada.`
-    };
+    const attackerLabel = chosenByPlayer ? `Tu ${attacker.nombre}` : `El rival ${attacker.nombre}`;
+    return resolveMoveShared({
+      attacker,
+      defender,
+      move,
+      attackerLabel,
+      defenderLabel: defender.nombre,
+      defenderPlannedMove: defenderMove
+    });
   }
 
   function endTurnUpdate(nextPlayer, nextEnemy) {
-    const updatedPlayer = { ...nextPlayer };
-    const updatedEnemy = { ...nextEnemy };
-
-    updatedPlayer.protegerTurno = false;
-    updatedEnemy.protegerTurno = false;
-    updatedPlayer.esquivaAtaqueTurno = false;
-    updatedEnemy.esquivaAtaqueTurno = false;
-
-    return { updatedPlayer, updatedEnemy };
+    return {
+      updatedPlayer: resetTurnFlagsShared(nextPlayer),
+      updatedEnemy: resetTurnFlagsShared(nextEnemy)
+    };
   }
 
   async function runTurn(playerMove) {
@@ -1132,11 +1761,7 @@ export default function App() {
 
     const enemyMove = pickAiMove(enemy);
     const firstIsPlayer =
-      (playerMove.prioridad || 0) > (enemyMove.prioridad || 0)
-        ? true
-        : (playerMove.prioridad || 0) < (enemyMove.prioridad || 0)
-          ? false
-          : player.velocidad >= enemy.velocidad;
+      chooseFirstAttackerShared(playerMove, enemyMove, player.velocidad, enemy.velocidad);
 
     let p = { ...player };
     let e = { ...enemy };
@@ -1252,33 +1877,44 @@ export default function App() {
   }
 
   return (
-    <div className="showdown-dark min-h-screen bg-[linear-gradient(180deg,#020617_0%,#0f172a_45%,#111827_100%)] text-slate-100">
-      <div className="mx-auto flex min-h-screen max-w-7xl flex-col p-3 md:p-6">
+    <div className="showdown-dark min-h-screen bg-black text-slate-100">
+      <div className="showdown-shell mx-auto flex min-h-screen max-w-7xl flex-col px-4 pb-6 pt-3 md:px-6">
         {screen !== "battle" && (
-        <header className="mb-4 rounded-[28px] border border-slate-900/15 bg-[linear-gradient(180deg,#f6f8fb_0%,#dce6f0_100%)] px-5 py-4 shadow-[0_18px_50px_rgba(15,23,42,0.16)] md:mb-6 md:px-6">
-          <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
-            <div className="space-y-1">
-              <div className="text-[11px] font-black uppercase tracking-[0.35em] text-slate-500">Battle Client</div>
-              <h1 className="showdown-title text-3xl text-slate-100 md:text-4xl">Showdown34</h1>
+          <header className="mb-6 border-b border-red-700/70 pb-3">
+            <div className="flex flex-col gap-4 lg:grid lg:grid-cols-[220px_minmax(0,1fr)_220px] lg:items-center">
+              <div className="flex items-start gap-6">
+                <div className="min-w-[180px] pr-6">
+                  <h1 className="showdown-title mt-2 text-5xl leading-none text-red-600 md:text-6xl">Showdown34</h1>
+                </div>
+              </div>
+              <nav className="flex flex-wrap items-center justify-center gap-6 pt-1 text-sm font-semibold uppercase tracking-[0.18em] text-zinc-500 lg:justify-center">
+                {[
+                  { id: "jugar_local", label: "Jugar local" },
+                  { id: "salas", label: "Salas" },
+                  { id: "salas_ffa", label: "Salas FFA" }
+                ].map((tab) => {
+                  const isActive = activeHomeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      onClick={() => openHomeTab(tab.id)}
+                      className={`px-0 py-3 text-left transition ${isActive ? "border-red-600 text-red-500" : "text-zinc-500 hover:text-zinc-200"}`}
+                    >
+                      {tab.label}
+                    </button>
+                  );
+                })}
+              </nav>
             </div>
-            <div className="flex items-center gap-2 self-start rounded-2xl border border-slate-900/10 bg-white/70 px-3 py-2 text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">
-              <span className="h-2 w-2 rounded-full bg-emerald-500" />
-              Local Battle
-            </div>
-          </div>
-        </header>
+          </header>
         )}
 
         {screen === "auth" && (
           <div className="flex min-h-[62vh] items-center justify-center px-2">
             <div className="w-full max-w-sm rounded-[32px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(239,245,250,0.98)_100%)] p-6 shadow-[0_24px_70px_rgba(15,23,42,0.18)]">
-              <div className="mb-5 flex items-center justify-between">
+              <div className="mb-5">
                 <div>
-                  <div className="text-[10px] font-black uppercase tracking-[0.32em] text-slate-400">Login</div>
-                  <h2 className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">Entrar al lobby</h2>
-                </div>
-                <div className="rounded-full border border-emerald-200 bg-emerald-50 px-3 py-1 text-[10px] font-black uppercase tracking-[0.22em] text-emerald-700">
-                  Online
+                  <h2 className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">Entrar</h2>
                 </div>
               </div>
 
@@ -1294,7 +1930,13 @@ export default function App() {
                   onClick={handleEnterLobby}
                   className="w-full rounded-[20px] bg-[linear-gradient(180deg,#0f172a_0%,#1e293b_100%)] px-4 py-3 text-sm font-black uppercase tracking-[0.2em] text-white transition hover:brightness-110"
                 >
-                  Entrar
+                  Entrar al sistema
+                </button>
+                <button
+                  onClick={handleOpenLocalModes}
+                  className="w-full rounded-[20px] border border-slate-300 bg-white px-4 py-3 text-sm font-black uppercase tracking-[0.18em] text-slate-700 transition hover:bg-slate-50"
+                >
+                  Modo local
                 </button>
               </div>
 
@@ -1310,9 +1952,9 @@ export default function App() {
         {screen === "lobby" && (
           <section className="rounded-[32px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.95)_0%,rgba(235,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
             <div className="mb-5 flex flex-col gap-4 border-b border-slate-900/8 pb-5 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Lobby</div>
-                <h2 className="mt-1 text-3xl font-black tracking-[-0.04em] text-slate-900">Sala activa</h2>
+              <div className="lg:px-3">
+                <div className="text-center text-[11px] font-black uppercase tracking-[0.2em] text-slate-500 lg:text-left">{activeHomeTab === "salas_ffa" ? "Salas FFA" : "Salas"}</div>
+                <h2 className="mt-1 text-center text-3xl font-black tracking-[-0.03em] text-slate-900 lg:text-left">{activeHomeTab === "salas_ffa" ? "Free For All abiertas" : "Sala activa"}</h2>
               </div>
               <div className="flex flex-wrap items-center gap-3">
                 <div className="rounded-2xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-slate-600">
@@ -1330,45 +1972,69 @@ export default function App() {
             <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_360px]">
               <div className="min-w-0">
                 <div className="mb-3 flex items-center justify-between">
-                  <div className="text-[11px] font-black uppercase tracking-[0.26em] text-slate-500">Jugadores conectados</div>
+                  <div className="px-2 text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">{activeHomeTab === "salas_ffa" ? "Salas disponibles" : "Jugadores conectados"}</div>
                   <div className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-slate-500">
-                    {activeUsers.length} online
+                    {activeHomeTab === "salas_ffa" ? `${availableFfaRooms.length} abiertas` : `${activeUsers.length} online`}
                   </div>
                 </div>
 
                 <div className="overflow-hidden rounded-[26px] border border-slate-200 bg-white/75">
-                  {activeUsers.map((user, index) => (
-                    <div
-                      key={user.username}
-                      className={`flex items-center justify-between gap-3 px-4 py-4 ${index !== activeUsers.length - 1 ? "border-b border-slate-200/80" : ""}`}
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-base font-black tracking-[-0.02em] text-slate-900">{user.username}</div>
-                        <div className="mt-1 text-sm text-slate-500">
-                          {user.username === username ? "Vos" : user.status === "online" ? "Disponible para retar" : "En batalla"}
-                        </div>
-                      </div>
-                      {user.username === username ? (
-                        <div className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-sky-700">
-                          Vos
-                        </div>
-                      ) : (
-                        <button
-                          onClick={() => handleSendChallenge(user.username)}
-                          disabled={user.status !== "online"}
-                          className={`rounded-2xl px-4 py-2 text-sm font-black transition ${user.status === "online" ? "bg-slate-900 text-white hover:bg-slate-800" : "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"}`}
+                  {activeHomeTab === "salas_ffa" ? (
+                    availableFfaRooms.length === 0 ? (
+                      <div className="px-4 py-4 text-sm text-slate-500">No hay salas públicas FFA abiertas.</div>
+                    ) : (
+                      availableFfaRooms.map((room, index) => (
+                        <div
+                          key={room.roomId}
+                          className={`flex items-center justify-between gap-3 px-4 py-4 ${index !== availableFfaRooms.length - 1 ? "border-b border-slate-200/80" : ""}`}
                         >
-                          Retar
-                        </button>
-                      )}
-                    </div>
-                  ))}
+                          <div className="min-w-0">
+                            <div className="truncate text-base font-black tracking-[-0.02em] text-slate-900">{room.roomId}</div>
+                            <div className="mt-1 text-sm text-slate-500">{room.count}/{room.maxPlayers} jugadores · {room.players.join(", ")}</div>
+                          </div>
+                          <button
+                            onClick={() => handleJoinFfaRoom(room.roomId)}
+                            className="rounded-2xl px-4 py-2 text-sm font-black transition"
+                          >
+                            Unirse
+                          </button>
+                        </div>
+                      ))
+                    )
+                  ) : (
+                    activeUsers.map((user, index) => (
+                      <div
+                        key={user.username}
+                        className={`flex items-center justify-between gap-3 px-4 py-4 ${index !== activeUsers.length - 1 ? "border-b border-slate-200/80" : ""}`}
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-base font-black tracking-[-0.02em] text-slate-900">{user.username}</div>
+                          <div className="mt-1 text-sm text-slate-500">
+                            {user.username === username ? "Vos" : user.status === "online" ? "Disponible para retar" : "En batalla"}
+                          </div>
+                        </div>
+                        {user.username === username ? (
+                          <div className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs font-black uppercase tracking-[0.18em] text-sky-700">
+                            Vos
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => handleSendChallenge(user.username)}
+                            disabled={user.status !== "online"}
+                            className={`rounded-2xl px-4 py-2 text-sm font-black transition ${user.status === "online" ? "bg-slate-900 text-white hover:bg-slate-800" : "cursor-not-allowed border border-slate-200 bg-slate-100 text-slate-400"}`}
+                          >
+                            Retar
+                          </button>
+                        )}
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
 
               <div className="space-y-4">
                 <div className="rounded-[26px] border border-slate-200 bg-white/78 p-4">
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Reto directo</div>
+                  <div className="px-2 text-center text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Reto directo</div>
                   <div className="mt-3 space-y-3">
                     <input
                       value={challengeTarget}
@@ -1385,8 +2051,50 @@ export default function App() {
                   </div>
                 </div>
 
+                {activeHomeTab === "salas_ffa" && (
+                  <div className="rounded-[26px] border border-slate-200 bg-white/78 p-4">
+                    <div className="mb-3 flex items-center justify-between">
+                      <div className="px-2 text-center text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Salas FFA</div>
+                      <button
+                        onClick={handleCreateFfaRoom}
+                        className="rounded-2xl bg-slate-900 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-slate-800"
+                      >
+                        Crear
+                      </button>
+                    </div>
+
+                    <div className="space-y-3">
+                      {availableFfaRooms.length === 0 ? (
+                        <div className="rounded-[18px] border border-dashed border-slate-200 bg-white px-4 py-3 text-sm text-slate-500">
+                          No hay salas públicas FFA abiertas.
+                        </div>
+                      ) : (
+                        availableFfaRooms.map((room) => (
+                          <div key={room.roomId} className="rounded-[20px] border border-slate-200 bg-white px-4 py-3">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="font-black text-slate-900">{room.roomId}</div>
+                                <div className="text-sm text-slate-500">{room.count}/{room.maxPlayers} jugadores</div>
+                              </div>
+                              <button
+                                onClick={() => handleJoinFfaRoom(room.roomId)}
+                                className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-black uppercase tracking-[0.16em] text-slate-700 transition hover:bg-white"
+                              >
+                                Unirse
+                              </button>
+                            </div>
+                            <div className="mt-2 text-sm text-slate-500">
+                              {room.players.join(", ")}
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+
                 <div className="rounded-[26px] border border-slate-200 bg-white/78 p-4">
-                  <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Estado</div>
+                  <div className="px-2 text-center text-[11px] font-black uppercase tracking-[0.16em] text-slate-500">Estado</div>
                   <div className="mt-3 text-sm font-medium text-slate-300">
                     {challengeMessage || "Conectado al lobby."}
                   </div>
@@ -1394,7 +2102,7 @@ export default function App() {
 
                 {incomingChallenge && (
                   <div className="rounded-[26px] border border-amber-200 bg-[linear-gradient(180deg,#fff7db_0%,#ffefbf_100%)] p-4">
-                    <div className="text-[11px] font-black uppercase tracking-[0.24em] text-amber-700">Desafío entrante</div>
+                    <div className="px-2 text-center text-[11px] font-black uppercase tracking-[0.16em] text-amber-700">Desafío entrante</div>
                     <div className="mt-2 text-base font-black text-slate-900">{incomingChallenge.from} te desafió</div>
                     <div className="mt-4 flex gap-3">
                       <button
@@ -1414,10 +2122,10 @@ export default function App() {
                 )}
 
                 <button
-                  onClick={handlePrepareLocalBattle}
+                  onClick={handleOpenLocalModes}
                   className="w-full rounded-[22px] border border-slate-300 bg-white/85 px-4 py-4 text-sm font-black uppercase tracking-[0.18em] text-slate-700 transition hover:bg-white"
                 >
-                  Probar sala local
+                  Jugar local
                 </button>
               </div>
             </div>
@@ -1427,9 +2135,7 @@ export default function App() {
         {screen === "room" && (
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
             <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
-              <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Battle Room</div>
               <h2 className="mb-2 text-2xl font-black tracking-[-0.04em] text-slate-900">Sala previa</h2>
-              <p className="mb-5 text-sm text-zinc-400">Elegí tu personaje y marcate como listo. Cuando ambos estén listos, arranca la batalla.</p>
 
               <div className="mb-5 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
                 <div className="font-semibold">Sala</div>
@@ -1469,16 +2175,17 @@ export default function App() {
             </section>
 
             <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
-              <div className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-500">Room Status</div>
-              <h2 className="mb-4 text-xl font-black tracking-[-0.03em] text-slate-900">Jugadores en la sala</h2>
+              <h2 className="mb-4 text-center text-xl font-black tracking-[-0.02em] text-slate-900 lg:text-left">Jugadores en la sala</h2>
               <div className="space-y-3">
                 {roomPlayers.map((playerName) => (
                   <div key={playerName} className="rounded-[24px] border border-slate-200 bg-white/80 px-4 py-3">
                     <div className="flex items-center justify-between">
-                      <div>
-                        <div className="font-black text-slate-900">{playerName}</div>
-                        <div className="text-sm text-slate-500">{playerName === username ? "Vos" : "Rival"}</div>
-                      </div>
+                        <div>
+                          <div className="font-black text-slate-900">{playerName}</div>
+                        <div className="text-sm text-slate-500">
+                          {playerName === username ? "Vos" : currentRoomMode === "free_for_all" ? "Jugador" : "Rival"}
+                        </div>
+                        </div>
                       <div className={`rounded-full px-3 py-1 text-xs font-black uppercase tracking-[0.16em] ${roomReady[playerName] ? "bg-emerald-500 text-white" : "border border-slate-300 bg-white text-slate-500"}`}>
                         {roomReady[playerName] ? "Listo" : "Esperando"}
                       </div>
@@ -1492,8 +2199,12 @@ export default function App() {
               </div>
 
               <div className="mt-5 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
-                <div className="font-semibold">Estado</div>
-                <div className="mt-1 text-zinc-400">{challengeMessage || "Esperando confirmación de ambos jugadores."}</div>
+                <div className="text-center font-semibold lg:text-left">Estado</div>
+                <div className="mt-1 text-zinc-400">
+                  {challengeMessage || (currentRoomMode === "free_for_all"
+                    ? `Esperando ${currentRoomMaxPlayers} jugadores listos.`
+                    : "Esperando confirmación de ambos jugadores.")}
+                </div>
               </div>
             </section>
           </div>
@@ -1502,10 +2213,11 @@ export default function App() {
         {screen === "menu" && (
           <div className="grid gap-5 xl:grid-cols-[minmax(0,1.45fr)_360px]">
             <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.94)_0%,rgba(234,242,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.16)]">
+              {gameModeId === "duel" ? (
+                <>
               <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
                 <div>
-                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Team Builder</div>
-                  <h2 className="text-2xl font-black tracking-[-0.04em] text-slate-900">Elegí tu personaje</h2>
+                  <h2 className="text-2xl font-black tracking-[-0.04em] text-slate-900">Elegi tu personaje</h2>
                 </div>
                 <div className="rounded-2xl border border-slate-200 bg-white/80 px-3 py-2 text-xs font-semibold text-slate-500">
                   Usuario: {username || "Invitado"}
@@ -1551,62 +2263,378 @@ export default function App() {
                   );
                 })}
               </div>
+                </>
+              ) : (
+                <>
+                  <div className="mb-5 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
+                    <div>
+                      <h2 className="text-2xl font-black tracking-[-0.04em] text-slate-900">Arma los 4 combatientes</h2>
+                    </div>
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">
+                      Local
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-2">
+                    {ffaSlots.map((slot) => {
+                      const slotCharacter = CHARACTERS[slot.characterId] || CHARACTERS.alan_soma;
+
+                      return (
+                        <div
+                          key={slot.slotId}
+                          className="rounded-[26px] border border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] p-4"
+                        >
+                          <div className="mb-3 flex items-center justify-between gap-3">
+                            <div>
+                              <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Slot {slot.slotId + 1}</div>
+                              <div className="text-lg font-black tracking-[-0.03em] text-slate-900">{slot.label}</div>
+                            </div>
+                            <span className="rounded-full bg-slate-900 px-3 py-1 text-[10px] font-black uppercase tracking-[0.18em] text-white">
+                              {slotCharacter.nombre}
+                            </span>
+                          </div>
+
+                          <select
+                            value={slot.characterId}
+                            onChange={(e) => updateFfaSlotCharacter(slot.slotId, e.target.value)}
+                            className="w-full rounded-[18px] border border-slate-200 bg-white px-4 py-3 text-sm font-semibold text-slate-900 outline-none focus:border-sky-400"
+                          >
+                            {Object.values(CHARACTERS).map((char) => (
+                              <option key={`${slot.slotId}-${char.id}`} value={char.id}>
+                                {char.nombre}
+                              </option>
+                            ))}
+                          </select>
+
+                          <div className="mt-4 grid grid-cols-2 gap-2 text-sm text-slate-700">
+                            <div className="rounded-2xl bg-white/80 px-3 py-2">HP: <span className="font-black">{slotCharacter.hp}</span></div>
+                            <div className="rounded-2xl bg-white/80 px-3 py-2">Ataque: <span className="font-black">{slotCharacter.ataque}</span></div>
+                            <div className="rounded-2xl bg-white/80 px-3 py-2">Defensa: <span className="font-black">{slotCharacter.defensa}</span></div>
+                            <div className="rounded-2xl bg-white/80 px-3 py-2">Velocidad: <span className="font-black">{slotCharacter.velocidad}</span></div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
             </section>
 
             <section className="rounded-[30px] border border-slate-900/12 bg-[linear-gradient(180deg,rgba(255,255,255,0.96)_0%,rgba(237,243,248,0.98)_100%)] p-5 shadow-[0_24px_70px_rgba(15,23,42,0.14)]">
               <div className="mb-5">
                 <div className="text-[11px] font-black uppercase tracking-[0.3em] text-slate-500">Battle Setup</div>
-                <h2 className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">{selectedCharacter.nombre}</h2>
+                <h2 className="mt-1 text-2xl font-black tracking-[-0.04em] text-slate-900">{gameMode.nombre}</h2>
               </div>
 
               <div className="rounded-[24px] border border-slate-200 bg-white/80 p-4">
-                <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Dificultad</div>
+                <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Modo</div>
                 <div className="mt-3 space-y-3">
-                  {Object.values(DIFFICULTIES).map((d) => (
+                  {Object.values(GAME_MODES).map((mode) => (
                     <button
-                      key={d.id}
-                      onClick={() => setDifficultyId(d.id)}
-                      className={`w-full rounded-[20px] border px-4 py-3 text-left transition ${difficultyId === d.id ? "border-slate-900 bg-slate-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.22)]" : "border-slate-200 bg-white text-slate-800 hover:border-slate-300"}`}
+                      key={mode.id}
+                      onClick={() => setGameModeId(mode.id)}
+                      className={`w-full rounded-[20px] border px-4 py-3 text-left transition ${gameModeId === mode.id ? "border-slate-900 bg-slate-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.22)]" : "border-slate-200 bg-white text-slate-800 hover:border-slate-300"}`}
                     >
-                      <div className="font-black">{d.nombre}</div>
-                      <div className={`text-sm ${difficultyId === d.id ? "text-slate-300" : "text-slate-500"}`}>{d.aiDelayLabel}</div>
+                      <div className="font-black">{mode.nombre}</div>
                     </button>
                   ))}
                 </div>
               </div>
 
-              <div className="mt-4 rounded-[24px] border border-slate-200 bg-white/80 p-4 text-sm text-slate-700">
-                <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Resumen</div>
-                <div className="mt-3 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500">Personaje</span>
-                    <span className="font-black text-slate-900">{selectedCharacter.nombre}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500">Usuario</span>
-                    <span className="font-black text-slate-900">{username || "Invitado"}</span>
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <span className="text-slate-500">Sala</span>
-                    <span className="font-black text-slate-900">{currentRoomId || "Local"}</span>
+              {gameModeId === "duel" && (
+                <div className="mt-4 rounded-[24px] border border-slate-200 bg-white/80 p-4">
+                  <div className="text-[11px] font-black uppercase tracking-[0.22em] text-slate-500">Dificultad</div>
+                  <div className="mt-3 space-y-3">
+                    {Object.values(DIFFICULTIES).map((d) => (
+                      <button
+                        key={d.id}
+                        onClick={() => setDifficultyId(d.id)}
+                        className={`w-full rounded-[20px] border px-4 py-3 text-left transition ${difficultyId === d.id ? "border-slate-900 bg-slate-900 text-white shadow-[0_12px_28px_rgba(15,23,42,0.22)]" : "border-slate-200 bg-white text-slate-800 hover:border-slate-300"}`}
+                      >
+                        <div className="font-black">{d.nombre}</div>
+                      </button>
+                    ))}
                   </div>
                 </div>
-              </div>
+              )}
 
               <button
                 onClick={() => {
+                  if (gameModeId === "free_for_all") {
+                    startFreeForAllBattle();
+                    return;
+                  }
+
                   setSelectedId(roomSelectedCharacter || selectedId);
                   startBattle();
                 }}
                 className="mt-5 w-full rounded-[22px] bg-[linear-gradient(180deg,#0f172a_0%,#1e293b_100%)] px-4 py-4 text-sm font-black uppercase tracking-[0.2em] text-white transition hover:brightness-110"
               >
-                Iniciar Showdown34
+                {gameModeId === "free_for_all" ? "Iniciar Free For All" : "Iniciar Showdown34"}
               </button>
             </section>
           </div>
         )}
 
-        {screen === "battle" && player && enemy && (
+        {isOnlineFfaBattle && onlineFfaPlayer && (
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.55fr)_320px] xl:grid-cols-[minmax(0,1.55fr)_360px]">
+            <section className="overflow-hidden rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e2e9f1_100%)] p-3 shadow-[0_22px_60px_rgba(15,23,42,0.18)] md:p-5">
+              <div className="mb-3 flex flex-row items-center justify-between gap-2 rounded-[24px] border border-slate-900/10 bg-white/80 px-3 py-2 shadow-sm md:mb-4 md:px-5 md:py-3">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Online Free For All</div>
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900 md:text-2xl">Turno {turn}</h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setScreen("room")}
+                    className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white md:px-4 md:text-sm md:normal-case md:tracking-normal"
+                  >
+                    Sala
+                  </button>
+                  <button
+                    onClick={() => setMobileLogOpen(true)}
+                    className="lg:hidden rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white"
+                  >
+                    Log
+                  </button>
+                </div>
+              </div>
+
+              <FfaBattleArena
+                combatants={onlineFfaArenaCombatants}
+                spriteStates={onlineFfaSpriteStates}
+                turn={turn}
+                arenaLabel="Free For All"
+                turnNote={battleOver ? "Resultado final" : onlineFfaPlayer.pending ? "Esperando al resto" : "Elegí un movimiento"}
+              />
+
+              <div className="rounded-[28px] border border-slate-900/10 bg-white/80 p-3 shadow-sm md:p-4">
+                <div className="mb-3">
+                  <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Tu turno</div>
+                  <div className="text-base font-black text-slate-900 md:text-lg">
+                    {battleOver ? "La batalla terminó" : `${onlineFfaPlayer.username} usa ${onlineFfaPlayer.nombre}`}
+                  </div>
+                  {!battleOver && (
+                    <div className="mt-1 text-sm text-slate-500">
+                      {onlineFfaPlayer.pending ? "Ya mandaste tu movimiento." : "Elegí un movimiento y, si corresponde, un objetivo."}
+                    </div>
+                  )}
+                </div>
+
+                {!battleOver && (
+                  <>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                      {onlineFfaPlayer.ataques.map((move) => {
+                        const usage = onlineFfaPlayer.usos[move.id];
+                        const disabled = battleInputLocked || onlineFfaPlayer.pending || usage <= 0;
+                        const isSelected = selectedMoveId === move.id;
+
+                        return (
+                          <button
+                            key={`online-ffa-move-${move.id}`}
+                            disabled={disabled}
+                            onClick={() => handleMoveClick(move)}
+                            className={`min-h-[72px] rounded-[22px] border px-3 py-2.5 text-left transition md:min-h-24 md:px-4 md:py-3 ${disabled ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400" : isSelected ? "border-sky-500 bg-[linear-gradient(180deg,#1e293b_0%,#0f172a_100%)] text-slate-100 shadow-[0_12px_24px_rgba(14,165,233,0.18)]" : "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] text-slate-800 hover:border-sky-400 hover:bg-white"}`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-black tracking-[-0.02em] md:text-base">{move.nombre}</div>
+                                <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 md:text-xs">{move.tipo}</div>
+                              </div>
+                              <div className="rounded-full border border-slate-300 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-500 md:text-xs">
+                                {usage}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {onlineFfaSelectedMove?.tipo === "ataque" && !onlineFfaPlayer.pending && (
+                      <div className="mt-4 rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#f8fbff_0%,#e8f1f8_100%)] p-4">
+                        <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Elegí objetivo</div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {onlineFfaCombatants
+                            .filter((combatant) => !combatant.isMe && combatant.hpActual > 0)
+                            .map((combatant) => (
+                              <button
+                                key={`online-target-${combatant.username}`}
+                                onClick={() => submitOnlineFfaMove(onlineFfaSelectedMove, combatant.username)}
+                                className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-left text-slate-800 transition hover:border-sky-400 hover:bg-sky-50"
+                              >
+                                <div className="font-black">{combatant.username}</div>
+                                <div className="text-sm text-slate-500">{combatant.nombre} · {combatant.hpActual}/{combatant.hp} HP</div>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            </section>
+
+            <aside className="hidden lg:block rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e6edf4_100%)] p-4 shadow-[0_22px_60px_rgba(15,23,42,0.16)] md:p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Battle Feed</div>
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900">Log de batalla</h2>
+                </div>
+                <div className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-bold text-slate-500">
+                  {logs.length} eventos
+                </div>
+              </div>
+              <div className="space-y-2">
+                {logs.map((line, i) => (
+                  <div
+                    key={`online-ffa-log-${line}-${i}`}
+                    className={`rounded-[20px] border px-4 py-3 text-sm shadow-sm ${i === 0 ? "border-sky-200 bg-sky-50 text-slate-800" : "border-slate-200 bg-white/80 text-slate-700"}`}
+                  >
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </aside>
+          </div>
+        )}
+
+        {isFfaBattle && ffaCurrentPlayer && (
+          <div className="grid gap-3 lg:grid-cols-[minmax(0,1.55fr)_320px] xl:grid-cols-[minmax(0,1.55fr)_360px]">
+            <section className="overflow-hidden rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e2e9f1_100%)] p-3 shadow-[0_22px_60px_rgba(15,23,42,0.18)] md:p-5">
+              <div className="mb-3 flex flex-row items-center justify-between gap-2 rounded-[24px] border border-slate-900/10 bg-white/80 px-3 py-2 shadow-sm md:mb-4 md:px-5 md:py-3">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.32em] text-slate-500">Free For All</div>
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900 md:text-2xl">Turno {turn}</h2>
+                </div>
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => setScreen("menu")}
+                    className="rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white md:px-4 md:text-sm md:normal-case md:tracking-normal"
+                  >
+                    Volver
+                  </button>
+                  <button
+                    onClick={() => setMobileLogOpen(true)}
+                    className="lg:hidden rounded-2xl border border-slate-300 bg-slate-100 px-3 py-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-700 transition hover:bg-white"
+                  >
+                    Log
+                  </button>
+                </div>
+              </div>
+
+              <FfaBattleArena
+                combatants={localFfaArenaCombatants}
+                spriteStates={ffaSpriteStates}
+                turn={turn}
+                arenaLabel="Free For All"
+                turnNote={battleOver ? "Resultado final" : `${ffaCurrentPlayer.label} decide`}
+              />
+
+              <div className="rounded-[28px] border border-slate-900/10 bg-white/80 p-3 shadow-sm md:p-4">
+                <div className="mb-3">
+                  <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Selección actual</div>
+                  <div className="text-base font-black text-slate-900 md:text-lg">
+                    {battleOver ? "La batalla terminó" : `${ffaCurrentPlayer.label} elige un movimiento`}
+                  </div>
+                  {!battleOver && (
+                    <div className="mt-1 text-sm text-slate-500">
+                      Personaje activo: <span className="font-black text-slate-900">{ffaCurrentPlayer.character.nombre}</span>
+                    </div>
+                  )}
+                </div>
+
+                {!battleOver && (
+                  <>
+                    <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                      {ffaCurrentPlayer.character.ataques.map((move) => {
+                        const usage = ffaCurrentPlayer.character.usos[move.id];
+                        const disabled = battleInputLocked || usage <= 0;
+                        const isSelected = selectedMoveId === move.id;
+
+                        return (
+                          <button
+                            key={move.id}
+                            disabled={disabled}
+                            onClick={() => handleMoveClick(move)}
+                            className={`min-h-[72px] rounded-[22px] border px-3 py-2.5 text-left transition md:min-h-24 md:px-4 md:py-3 ${disabled ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400" : isSelected ? "border-sky-500 bg-[linear-gradient(180deg,#1e293b_0%,#0f172a_100%)] text-slate-100 shadow-[0_12px_24px_rgba(14,165,233,0.18)]" : "border-slate-200 bg-[linear-gradient(180deg,#ffffff_0%,#eef4f9_100%)] text-slate-800 hover:border-sky-400 hover:bg-white"}`}
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-sm font-black tracking-[-0.02em] md:text-base">{move.nombre}</div>
+                                <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-500 md:text-xs">{move.tipo}</div>
+                              </div>
+                              <div className="rounded-full border border-slate-300 bg-white/80 px-2 py-1 text-[10px] font-bold text-slate-500 md:text-xs">
+                                {usage}
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {ffaSelectedMove?.tipo === "ataque" && (
+                      <div className="mt-4 rounded-[24px] border border-slate-200 bg-[linear-gradient(180deg,#f8fbff_0%,#e8f1f8_100%)] p-4">
+                        <div className="text-[11px] font-black uppercase tracking-[0.24em] text-slate-500">Elegí objetivo</div>
+                        <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                          {ffaPlayers
+                            .map((fighter, index) => ({ fighter, index }))
+                            .filter(({ fighter, index }) => index !== ffaCurrentPlayerIndex && fighter.character.hpActual > 0)
+                            .map(({ fighter, index }) => (
+                              <button
+                                key={`target-${fighter.slotId}`}
+                                onClick={() => commitFfaSelection(ffaSelectedMove, index)}
+                                className="rounded-[20px] border border-slate-200 bg-white px-4 py-3 text-left text-slate-800 transition hover:border-sky-400 hover:bg-sky-50"
+                              >
+                                <div className="font-black">{fighter.label}</div>
+                                <div className="text-sm text-slate-500">{fighter.character.nombre} · {fighter.character.hpActual}/{fighter.character.hp} HP</div>
+                              </button>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
+                )}
+
+                {battleOver && (
+                  <div className="mt-3 rounded-[26px] border border-slate-900/10 bg-[linear-gradient(180deg,#fff7db_0%,#ffe4a3_100%)] p-3 text-center text-slate-900 shadow-sm md:mt-4 md:p-4">
+                    <div className="text-[11px] font-black uppercase tracking-[0.3em] text-amber-700">Resultado</div>
+                    <div className="mt-1 text-xl font-black md:text-2xl">{logs[0]}</div>
+                    <button
+                      onClick={startFreeForAllBattle}
+                      className="mt-3 rounded-2xl bg-slate-900 px-4 py-2 text-xs font-black uppercase tracking-[0.16em] text-white transition hover:bg-slate-800 md:px-5 md:py-3 md:text-sm md:tracking-[0.18em]"
+                    >
+                      Jugar otra vez
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+
+            <aside className="hidden lg:block rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e6edf4_100%)] p-4 shadow-[0_22px_60px_rgba(15,23,42,0.16)] md:p-5">
+              <div className="mb-4 flex items-center justify-between">
+                <div>
+                  <div className="text-[11px] font-black uppercase tracking-[0.28em] text-slate-500">Battle Feed</div>
+                  <h2 className="text-xl font-black tracking-[-0.03em] text-slate-900">Log de batalla</h2>
+                </div>
+                <div className="rounded-full border border-slate-200 bg-white/80 px-3 py-1 text-xs font-bold text-slate-500">
+                  {logs.length} eventos
+                </div>
+              </div>
+              <div className="space-y-2">
+                {logs.map((line, i) => (
+                  <div
+                    key={`ffa-log-${line}-${i}`}
+                    className={`rounded-[20px] border px-4 py-3 text-sm shadow-sm ${i === 0 ? "border-sky-200 bg-sky-50 text-slate-800" : "border-slate-200 bg-white/80 text-slate-700"}`}
+                  >
+                    {line}
+                  </div>
+                ))}
+              </div>
+            </aside>
+          </div>
+        )}
+
+        {screen === "battle" && gameModeId !== "free_for_all" && player && enemy && (
           <div className="grid gap-3 lg:grid-cols-[minmax(0,1.55fr)_320px] xl:grid-cols-[minmax(0,1.55fr)_360px]">
             <section className="overflow-hidden rounded-[30px] border border-slate-900/15 bg-[linear-gradient(180deg,#f7f9fc_0%,#e2e9f1_100%)] p-2 shadow-[0_22px_60px_rgba(15,23,42,0.18)] md:p-5">
               <div className="mb-2 flex flex-row items-center justify-between gap-2 rounded-[24px] border border-slate-900/10 bg-white/80 px-3 py-2 shadow-sm md:mb-4 md:flex-row md:items-center md:justify-between md:px-5 md:py-3">
@@ -1831,7 +2859,7 @@ export default function App() {
           </div>
         )}
 
-        {screen === "battle" && player && enemy && mobileLogOpen && (
+        {screen === "battle" && mobileLogOpen && (isOnlineFfaBattle || (gameModeId === "free_for_all" && ffaPlayers.length > 0) || (gameModeId !== "free_for_all" && player && enemy)) && (
           <div className="fixed inset-0 z-50 bg-slate-950/70 lg:hidden" onClick={() => setMobileLogOpen(false)}>
             <div
               className="absolute inset-x-0 bottom-0 max-h-[70vh] overflow-hidden border border-slate-700 bg-slate-950"
@@ -1866,3 +2894,5 @@ export default function App() {
     </div>
   );
 }
+
+
